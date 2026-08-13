@@ -1,11 +1,13 @@
 import React, { useState, useMemo } from 'react';
-import { FileText, Download, Filter, Calendar, AlertTriangle, Info, AlertCircle, Search, RefreshCw } from 'lucide-react';
+import { FileText, Download, Filter, Calendar, AlertTriangle, Info, AlertCircle, Search, RefreshCw, FileSpreadsheet } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import api from '../services/api';
+import ExecutiveReportModal from '../components/ExecutiveReportModal';
 
 const ReportMgmt = () => {
   const [selectedSeverity, setSelectedSeverity] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [isExecutiveModalOpen, setIsExecutiveModalOpen] = useState(false);
 
   const { data: reports = [], isLoading, refetch, isFetching } = useQuery({
     queryKey: ['reports'],
@@ -77,7 +79,7 @@ const ReportMgmt = () => {
           <p className="text-zinc-500">Historial de detecciones, desconexiones y alertas del sistema.</p>
         </div>
         
-        <div className="flex gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button 
             onClick={() => refetch()}
             className="p-2.5 rounded-xl bg-zinc-900 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-white transition-all cursor-pointer"
@@ -85,15 +87,31 @@ const ReportMgmt = () => {
           >
             <RefreshCw size={18} className={isFetching ? "animate-spin text-blue-400" : ""} />
           </button>
+
+          <button 
+            onClick={() => setIsExecutiveModalOpen(true)}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-xl font-semibold transition-all shadow-lg shadow-blue-600/25 active:scale-95 cursor-pointer"
+          >
+            <FileSpreadsheet size={18} />
+            Reporte Ejecutivo
+          </button>
+
           <button 
             onClick={exportToCSV}
-            className="flex items-center gap-2 bg-zinc-100 hover:bg-white text-zinc-950 px-5 py-2.5 rounded-xl font-semibold transition-all shadow-lg active:scale-95 cursor-pointer"
+            className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-200 px-5 py-2.5 rounded-xl font-semibold transition-all active:scale-95 cursor-pointer"
           >
             <Download size={18} />
             Exportar CSV ({filteredReports.length})
           </button>
         </div>
       </header>
+
+      {/* Executive Report Modal */}
+      <ExecutiveReportModal 
+        isOpen={isExecutiveModalOpen} 
+        onClose={() => setIsExecutiveModalOpen(false)} 
+      />
+
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
