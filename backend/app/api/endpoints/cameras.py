@@ -14,25 +14,31 @@ def read_cameras(
 ) -> Any:
     cameras = session.exec(select(Camera).offset(skip).limit(limit)).all()
     return cameras
+import asyncio
 import time
 from fastapi import Response
 from app.core.hikvision import HikvisionDriver
 from app.models.models import Device
 
 SNAPSHOT_CACHE = {} # {camera_id: (timestamp, image_data)}
+IN_FLIGHT_SNAPSHOTS = {} # {camera_id: asyncio.Task}
 MAX_CACHE_ENTRIES = 128
 
 def _prune_snapshot_cache(now: float):
     if len(SNAPSHOT_CACHE) > MAX_CACHE_ENTRIES:
-        # Eliminar entradas con más de 30s de antigüedad
-        stale_keys = [k for k, (ts, _) in SNAPSHOT_CACHE.items() if now - ts > 30.0]
+        stale_keys = [k for k, (ts, _) in SNAPSHOT_CACHE.items() if now - ts > 60.0]
         for k in stale_keys:
             del SNAPSHOT_CACHE[k]
-        # Si aún excede, conservar sólo las más recientes
         if len(SNAPSHOT_CACHE) > MAX_CACHE_ENTRIES:
             sorted_keys = sorted(SNAPSHOT_CACHE.keys(), key=lambda k: SNAPSHOT_CACHE[k][0])
             for k in sorted_keys[: len(SNAPSHOT_CACHE) - MAX_CACHE_ENTRIES]:
                 del SNAPSHOT_CACHE[k]
+
+async def _fetch_snapshot_worker(device: Device, channel: int, camera_id: int):
+    driver = HikvisionDriver(device)
+    image_data = await driver.get_snapshot(channel)
+    SNAPSHOT_CACHE[camera_id] = (time.time(), image_data)
+    return image_data
 
 @router.get("/{camera_id}/snapshot")
 async def get_camera_snapshot(
@@ -40,33 +46,46 @@ async def get_camera_snapshot(
     session: Session = Depends(get_session)
 ) -> Any:
     camera = session.get(Camera, camera_id)
-    if not camera:
+    if not camera or not camera.is_active:
         return Response(status_code=404)
         
     device = session.get(Device, camera.device_id)
-    if not device:
+    if not device or not device.is_online:
         return Response(status_code=404)
         
     now = time.time()
     _prune_snapshot_cache(now)
 
+    # 1. Si tenemos caché fresco (< 4.0s), devolver de inmediato
     if camera_id in SNAPSHOT_CACHE:
         cache_time, cached_data = SNAPSHOT_CACHE[camera_id]
-        if now - cache_time < 3.0: # 3 second cache
+        if now - cache_time < 4.0:
             return Response(content=cached_data, media_type="image/jpeg")
         
+    # 2. Si ya hay una petición en curso para esta cámara, esperar la misma tarea (Deduplicación)
+    if camera_id in IN_FLIGHT_SNAPSHOTS:
+        try:
+            image_data = await IN_FLIGHT_SNAPSHOTS[camera_id]
+            return Response(content=image_data, media_type="image/jpeg")
+        except Exception:
+            pass
+
+    # 3. Crear nueva tarea de obtención
+    task = asyncio.create_task(_fetch_snapshot_worker(device, camera.channel, camera_id))
+    IN_FLIGHT_SNAPSHOTS[camera_id] = task
+
     try:
-        driver = HikvisionDriver(device)
-        image_data = await driver.get_snapshot(camera.channel)
-        SNAPSHOT_CACHE[camera_id] = (now, image_data)
+        image_data = await task
         return Response(content=image_data, media_type="image/jpeg")
     except Exception as e:
-        print(f"Error fetching snapshot for camera {camera_id}: {e}")
-        # Fallback to expired cache if available to prevent black screens and browser blocking
+        # Fallback a caché anterior si existe
         if camera_id in SNAPSHOT_CACHE:
             _, cached_data = SNAPSHOT_CACHE[camera_id]
             return Response(content=cached_data, media_type="image/jpeg")
-        return Response(status_code=500)
+        return Response(status_code=404)
+    finally:
+        IN_FLIGHT_SNAPSHOTS.pop(camera_id, None)
+
 
 
 

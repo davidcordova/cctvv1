@@ -1,44 +1,81 @@
-import React, { useState, useEffect } from 'react';
-import { LayoutGrid, Maximize2, Settings, RefreshCw, Grid3X3, Grid2X2, Camera as CameraIcon, Star, Layers, Play, ChevronLeft, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  LayoutGrid, 
+  Maximize2, 
+  Settings, 
+  RefreshCw, 
+  Grid3X3, 
+  Grid2X2, 
+  Camera as CameraIcon, 
+  Star, 
+  Layers, 
+  Play, 
+  ChevronLeft, 
+  ChevronRight,
+  Radio,
+  Image as ImageIcon,
+  AlertCircle
+} from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
 
-const CameraCard = ({ camera, onZoom, refreshKey, isWebRTCAvailable, isPinned, onPin }) => {
+const CameraCard = ({ camera, onZoom, refreshKey, streamMode, isWebRTCAvailable, isPinned, onPin }) => {
   const [snapshotUrl, setSnapshotUrl] = useState(`${api.defaults.baseURL}/cameras/${camera.id}/snapshot?t=${Date.now()}`);
-  const [error, setError] = useState(false);
+  const [imgLoading, setImgLoading] = useState(true);
+  const [imgError, setImgError] = useState(false);
+  const [webrtcError, setWebrtcError] = useState(false);
 
   // Update snapshot when parent triggers a refresh
   useEffect(() => {
     setSnapshotUrl(`${api.defaults.baseURL}/cameras/${camera.id}/snapshot?t=${Date.now()}`);
-    setError(false);
+    setImgLoading(true);
+    setImgError(false);
   }, [refreshKey, camera.id]);
+
+  const useWebRTC = streamMode === 'webrtc' && isWebRTCAvailable && camera.rtsp_url && !webrtcError;
 
   return (
     <div 
       key={camera.id} 
       onClick={() => onZoom(camera, snapshotUrl)}
-      className="relative group bg-zinc-900 rounded-xl overflow-hidden border border-zinc-800 hover:border-blue-500/60 transition-all shadow-xl cursor-pointer w-full aspect-video flex flex-col select-none"
+      className="relative group bg-zinc-900 rounded-2xl overflow-hidden border border-zinc-800 hover:border-blue-500/60 transition-all shadow-xl cursor-pointer w-full aspect-video flex flex-col select-none"
     >
       <div className="w-full h-full relative aspect-video flex items-center justify-center bg-black overflow-hidden">
-        {isWebRTCAvailable && camera.rtsp_url ? (
+        {useWebRTC ? (
           <iframe 
             src={`http://${window.location.hostname}:1984/webrtc.html?src=camera_${camera.id}&mode=webrtc`} 
             title={camera.name}
             className="absolute inset-0 w-full h-full border-0 pointer-events-none"
             scrolling="no"
             allow="autoplay; fullscreen"
+            onError={() => setWebrtcError(true)}
           />
-        ) : !error ? (
-          <img 
-            src={snapshotUrl} 
-            alt={camera.name}
-            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
-            onError={() => setError(true)}
-          />
+        ) : !imgError ? (
+          <>
+            {imgLoading && (
+              <div className="absolute inset-0 bg-zinc-950/80 flex flex-col items-center justify-center gap-2 z-10 animate-pulse">
+                <div className="w-6 h-6 border-2 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+                <span className="text-[10px] text-zinc-500 font-mono">Cargando señal...</span>
+              </div>
+            )}
+            <img 
+              src={snapshotUrl} 
+              alt={camera.name}
+              className={`w-full h-full object-cover transition-all duration-300 ${imgLoading ? 'opacity-0' : 'opacity-100 group-hover:scale-105'}`}
+              onLoad={() => setImgLoading(false)}
+              onError={() => {
+                setImgLoading(false);
+                setImgError(true);
+              }}
+            />
+          </>
         ) : (
-          <div className="text-zinc-600 flex flex-col items-center gap-2">
-            <CameraIcon size={32} />
-            <span className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wider">CANAL APAGADO / ERROR</span>
+          <div className="text-zinc-600 flex flex-col items-center gap-2 p-4 text-center">
+            <div className="w-12 h-12 bg-zinc-900/80 rounded-2xl flex items-center justify-center border border-zinc-800">
+              <CameraIcon size={24} className="opacity-40" />
+            </div>
+            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">CANAL SIN SEÑAL / EN ESPERA</span>
+            <span className="text-[9px] text-zinc-600 font-mono">CH {camera.channel}</span>
           </div>
         )}
         
@@ -93,12 +130,14 @@ const CameraWall = () => {
   const [activePatrolIndex, setActivePatrolIndex] = useState(0);
   const [isWallFullscreen, setIsWallFullscreen] = useState(false);
   const [zoomedCamera, setZoomedCamera] = useState(null);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [streamMode, setStreamMode] = useState('snapshot'); // 'snapshot' | 'webrtc'
+  const [autoRefreshSec, setAutoRefreshSec] = useState(5); // 0 = disabled, 3, 5, 10, 15
   const [isWebRTCAvailable, setIsWebRTCAvailable] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
 
   const [refreshKey, setRefreshKey] = useState(0);
   const queryClient = useQueryClient();
+
 
   useEffect(() => {
     const checkWebRTC = async () => {
@@ -182,14 +221,14 @@ const CameraWall = () => {
     setPinnedCameraId(prev => prev === cameraId ? null : cameraId);
   };
 
-  // Auto-refresh interval (15 seconds)
+  // Auto-refresh interval (when autoRefreshSec > 0 and streamMode === 'snapshot')
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefreshSec || autoRefreshSec <= 0 || streamMode !== 'snapshot') return;
     const interval = setInterval(() => {
       setRefreshKey(prev => prev + 1);
-    }, 15000);
+    }, autoRefreshSec * 1000);
     return () => clearInterval(interval);
-  }, [autoRefresh]);
+  }, [autoRefreshSec, streamMode]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -227,15 +266,15 @@ const CameraWall = () => {
 
   // Auto-refresh the zoomed camera image in modal
   useEffect(() => {
-    if (!zoomedCamera) return;
+    if (!zoomedCamera || streamMode === 'webrtc') return;
     const interval = setInterval(() => {
       setZoomedCamera(prev => prev ? {
         ...prev,
         url: `${api.defaults.baseURL}/cameras/${prev.id}/snapshot?t=${Date.now()}`
       } : null);
-    }, 5000);
+    }, 3000);
     return () => clearInterval(interval);
-  }, [zoomedCamera?.id]);
+  }, [zoomedCamera?.id, streamMode]);
 
   const startIndex = (currentPage - 1) * pageSize;
   const paginatedCameras = activeCameras.slice(startIndex, startIndex + pageSize);
@@ -324,7 +363,7 @@ const CameraWall = () => {
             <div className="flex items-center bg-zinc-950 px-2 py-1 rounded-lg border border-zinc-800 text-xs gap-1.5 animate-in fade-in duration-300">
               <button 
                 onClick={() => setCurrentPage(prev => (prev > 1 ? prev - 1 : totalPages))}
-                className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-all active:scale-95"
+                className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-all active:scale-95 cursor-pointer"
                 title="Página Anterior (Flecha Izquierda)"
               >
                 <ChevronLeft size={16} />
@@ -334,7 +373,7 @@ const CameraWall = () => {
               </span>
               <button 
                 onClick={() => setCurrentPage(prev => (prev < totalPages ? prev + 1 : 1))}
-                className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-all active:scale-95"
+                className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-all active:scale-95 cursor-pointer"
                 title="Página Siguiente (Flecha Derecha)"
               >
                 <ChevronRight size={16} />
@@ -344,32 +383,69 @@ const CameraWall = () => {
         </div>
 
         <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 text-xs text-zinc-400 bg-zinc-950 px-3 py-2 rounded-lg border border-zinc-800 cursor-pointer select-none">
-            <input 
-              type="checkbox" 
-              checked={autoRefresh} 
-              onChange={(e) => setAutoRefresh(e.target.checked)}
-              className="rounded border-zinc-800 bg-zinc-950 text-blue-600 focus:ring-0 focus:ring-offset-0"
-            />
-            <span>Auto-refrescar (15s)</span>
-          </label>
+          {/* Stream Mode Switcher */}
+          <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800 items-center text-xs font-semibold">
+            <button
+              onClick={() => setStreamMode('snapshot')}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-all cursor-pointer ${
+                streamMode === 'snapshot' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'
+              }`}
+              title="Modo Instantáneas: Máxima estabilidad y bajo consumo"
+            >
+              <ImageIcon size={14} />
+              <span>Snapshots</span>
+            </button>
+            <button
+              onClick={() => setStreamMode('webrtc')}
+              disabled={!isWebRTCAvailable}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-all cursor-pointer ${
+                streamMode === 'webrtc' 
+                  ? 'bg-emerald-600 text-white shadow' 
+                  : isWebRTCAvailable 
+                  ? 'text-zinc-400 hover:text-white' 
+                  : 'text-zinc-600 cursor-not-allowed opacity-50'
+              }`}
+              title={isWebRTCAvailable ? "Modo WebRTC: Transmisión fluida a 30 FPS" : "WebRTC no disponible"}
+            >
+              <Radio size={14} />
+              <span>WebRTC en Vivo</span>
+            </button>
+          </div>
+
+          {/* Auto-refresh interval dropdown */}
+          {streamMode === 'snapshot' && (
+            <div className="flex items-center gap-1.5 bg-zinc-950 px-2.5 py-1.5 rounded-lg border border-zinc-800 text-xs">
+              <span className="text-zinc-500 font-medium">Refresco:</span>
+              <select 
+                value={autoRefreshSec}
+                onChange={(e) => setAutoRefreshSec(parseInt(e.target.value))}
+                className="bg-transparent text-zinc-200 border-none outline-none font-bold cursor-pointer"
+              >
+                <option value={3} className="bg-zinc-900 text-zinc-200">3s</option>
+                <option value={5} className="bg-zinc-900 text-zinc-200">5s</option>
+                <option value={10} className="bg-zinc-900 text-zinc-200">10s</option>
+                <option value={0} className="bg-zinc-900 text-zinc-200">Off</option>
+              </select>
+            </div>
+          )}
 
           <button 
             onClick={triggerManualRefresh}
-            className={`p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 transition-all ${isRefetching ? 'animate-spin text-blue-400' : 'hover:text-white'}`}
+            className={`p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 transition-all cursor-pointer ${isRefetching ? 'animate-spin text-blue-400' : 'hover:text-white'}`}
             title="Actualizar todo"
           >
-            <RefreshCw size={20} />
+            <RefreshCw size={18} />
           </button>
           <button 
             onClick={toggleFullScreen}
-            className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg font-medium transition-all text-sm shadow-lg shadow-blue-600/20 active:scale-95 flex items-center gap-2"
+            className="bg-zinc-800 hover:bg-zinc-700 text-white px-3.5 py-2 rounded-lg font-medium transition-all text-xs border border-zinc-700 shadow active:scale-95 flex items-center gap-1.5 cursor-pointer"
           >
-            <Maximize2 size={16} />
+            <Maximize2 size={14} />
             Pantalla Completa
           </button>
         </div>
       </header>
+
 
       {/* Fullscreen container containing the grid and exit button */}
       <div 
@@ -411,6 +487,7 @@ const CameraWall = () => {
                   camera={activeCameras[activePatrolIndex]} 
                   onZoom={handleZoom} 
                   refreshKey={refreshKey} 
+                  streamMode={streamMode}
                   isWebRTCAvailable={isWebRTCAvailable} 
                 />
               </div>
@@ -439,6 +516,7 @@ const CameraWall = () => {
                       camera={focusCam} 
                       onZoom={handleZoom} 
                       refreshKey={refreshKey} 
+                      streamMode={streamMode}
                       isWebRTCAvailable={isWebRTCAvailable} 
                       isPinned={focusCam.id === pinnedCameraId}
                       onPin={handlePinCamera}
@@ -455,6 +533,7 @@ const CameraWall = () => {
                           camera={cam} 
                           onZoom={handleZoom} 
                           refreshKey={refreshKey} 
+                          streamMode={streamMode}
                           isWebRTCAvailable={isWebRTCAvailable} 
                           isPinned={cam.id === pinnedCameraId}
                           onPin={handlePinCamera}
@@ -486,6 +565,7 @@ const CameraWall = () => {
                     camera={camera} 
                     onZoom={handleZoom} 
                     refreshKey={refreshKey} 
+                    streamMode={streamMode}
                     isWebRTCAvailable={isWebRTCAvailable} 
                     isPinned={camera.id === pinnedCameraId}
                     onPin={handlePinCamera}
@@ -495,6 +575,7 @@ const CameraWall = () => {
             </div>
           </main>
         )}
+
 
         {/* Floating Slide Navigation Overlay (Presentación Diapositivas) */}
         {totalPages > 1 && layout !== 'patrol' && (

@@ -143,32 +143,61 @@ class HikvisionDriver:
             return []
 
 
+WORKING_SNAPSHOT_ENDPOINTS: Dict[str, tuple] = {}
+
     async def get_snapshot(self, channel_id: int) -> bytes:
-        """Obtiene una captura (JPEG) probando varios patrones de URL de canal."""
-        chan_str = str(channel_id)
-        candidates = []
-        if chan_str.endswith("01"):
-            candidates = [chan_str, str(int(chan_str[:-2]))]
-        elif channel_id < 100:
-            candidates = [f"{channel_id}01", str(channel_id), f"{channel_id + 100}01"]
+        """Obtiene una captura (JPEG) probando varios patrones de URL de canal con caché de endpoint exitoso."""
+        cache_key = f"{self.device.host}:{channel_id}"
+        
+        brand_str = str(self.device.brand).lower()
+        if "dahua" in brand_str:
+            chan_num = channel_id
+            if chan_num >= 100 and chan_num % 100 == 1:
+                chan_num = chan_num // 100
+            endpoints = [f"/cgi-bin/snapshot.cgi?channel={chan_num}"]
         else:
-            candidates = [chan_str]
+            chan_str = str(channel_id)
+            candidates = []
+            if chan_str.endswith("01"):
+                candidates = [chan_str, str(int(chan_str[:-2]))]
+            elif channel_id < 100:
+                candidates = [f"{channel_id}01", str(channel_id), f"{channel_id + 100}01"]
+            else:
+                candidates = [chan_str]
 
-        endpoints = []
-        for c in candidates:
-            endpoints.append(f"/Streaming/channels/{c}/picture")
-            endpoints.append(f"/ContentMgmt/InputProxy/channels/{c}/picture")
-            endpoints.append(f"/System/Video/inputs/channels/{c}/picture")
+            endpoints = []
+            for c in candidates:
+                endpoints.append(f"/Streaming/channels/{c}/picture")
+                endpoints.append(f"/ContentMgmt/InputProxy/channels/{c}/picture")
+                endpoints.append(f"/System/Video/inputs/channels/{c}/picture")
 
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            for ep in endpoints:
+        # 1. Si ya conocemos el endpoint y puerto que funcionó antes para este canal, probarlo primero
+        if cache_key in WORKING_SNAPSHOT_ENDPOINTS:
+            cached_port, cached_ep = WORKING_SNAPSHOT_ENDPOINTS[cache_key]
+            url = f"http://{self.device.host}:{cached_port}{cached_ep if cached_ep.startswith('/cgi-bin') else '/ISAPI' + cached_ep}"
+            async with httpx.AsyncClient(timeout=1.5) as client:
                 try:
-                    response = await self._fetch(client, "GET", ep)
-                    if response.status_code == 200 and len(response.content) > 100:
-                        return response.content
+                    res = await self._fetch_url(client, "GET", url)
+                    if res.status_code == 200 and len(res.content) > 100:
+                        return res.content
                 except Exception:
-                    pass
-            raise ValueError(f"No se pudo obtener imagen para canal {channel_id}")
+                    del WORKING_SNAPSHOT_ENDPOINTS[cache_key]
+
+        # 2. Probar candidatos con timeout rápido
+        async with httpx.AsyncClient(timeout=1.2) as client:
+            for port in self.http_ports:
+                for ep in endpoints:
+                    url = f"http://{self.device.host}:{port}{ep if ep.startswith('/cgi-bin') else '/ISAPI' + ep}"
+                    try:
+                        res = await self._fetch_url(client, "GET", url)
+                        if res.status_code == 200 and len(res.content) > 100:
+                            WORKING_SNAPSHOT_ENDPOINTS[cache_key] = (port, ep)
+                            return res.content
+                    except Exception:
+                        pass
+
+        raise ValueError(f"No se pudo obtener imagen para canal {channel_id} en {self.device.host}")
+
 
     def get_rtsp_url(self, channel_id: int) -> str:
         """Genera la URL RTSP para un canal específico delegando en generate_rtsp_url."""
