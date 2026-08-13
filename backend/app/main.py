@@ -79,9 +79,26 @@ async def lifespan(app: FastAPI):
     try:
         SQLModel.metadata.create_all(engine)
         print("Database tables created successfully")
+        # Asegurar existencia del usuario admin por defecto
+        from app.models.models import User, UserRole
+        from app.core import security
+        with Session(engine) as session:
+            admin_user = session.exec(select(User).where(User.username == "admin")).first()
+            if not admin_user:
+                admin_user = User(
+                    username="admin",
+                    full_name="Administrador del Sistema",
+                    hashed_password=security.get_password_hash("M1un1c4cl4v3"),
+                    role=UserRole.ADMIN,
+                    is_active=True
+                )
+                session.add(admin_user)
+                session.commit()
+                print("Default admin user created")
         monitor_task = asyncio.create_task(monitor_devices_loop())
     except Exception as e:
-        print(f"Error creating database tables: {e}")
+        print(f"Error creating database tables or admin user: {e}")
+
 
     try:
         from app.core.go2rtc import start_go2rtc
