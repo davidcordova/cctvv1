@@ -1,0 +1,628 @@
+import React, { useState, useEffect } from 'react';
+import { Plus, Server, Trash2, RefreshCw, Radar, CheckCircle2, Edit3, Monitor, Power, RotateCw } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import api, { deviceService } from '../services/api';
+
+const DeviceMgmt = () => {
+  const queryClient = useQueryClient();
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [discoveredDevices, setDiscoveredDevices] = useState([]);
+  const [editingDevice, setEditingDevice] = useState(null);
+  const [activeMonitorDevice, setActiveMonitorDevice] = useState(null);
+  const [isWebRTCAvailable, setIsWebRTCAvailable] = useState(false);
+  const [savingCameraIds, setSavingCameraIds] = useState(new Set());
+  const [savedCameraIds, setSavedCameraIds] = useState(new Set());
+  const [cameraRefreshKeys, setCameraRefreshKeys] = useState({});
+  const [expandedDevices, setExpandedDevices] = useState(new Set());
+
+  useEffect(() => {
+    const checkWebRTC = async () => {
+      try {
+        const res = await api.get('/cameras/webrtc-status');
+        if (res.data && res.data.available) {
+          setIsWebRTCAvailable(true);
+        }
+      } catch (e) {
+        setIsWebRTCAvailable(false);
+      }
+    };
+    checkWebRTC();
+  }, []);
+
+
+  
+  const refreshCameraSnapshot = (cameraId) => {
+    setCameraRefreshKeys(prev => ({
+      ...prev,
+      [cameraId]: Date.now()
+    }));
+  };
+
+  const [formData, setFormData] = useState({
+    name: '', host: '', port: 80, username: 'admin', password: '', device_type: 'DVR', brand: 'Hikvision'
+  });
+
+
+  const { data: devices = [], isPending: isLoading } = useQuery({
+    queryKey: ['devices'],
+    queryFn: async () => {
+      const response = await deviceService.getDevices();
+      return response.data;
+    }
+  });
+
+  const { data: cameras = [], isLoading: isLoadingCameras } = useQuery({
+    queryKey: ['cameras'],
+    queryFn: async () => {
+      const response = await api.get('/cameras/');
+      return response.data;
+    }
+  });
+
+  const addDeviceMutation = useMutation({
+    mutationFn: (newDevice) => deviceService.createDevice(newDevice),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['devices'] });
+      closeModal();
+    },
+    onError: (error) => {
+      const detail = error.response?.data?.detail;
+      let message = error.message;
+      if (Array.isArray(detail)) {
+        message = detail.map(d => `${d.loc.join('.')}: ${d.msg}`).join('\n');
+      } else if (typeof detail === 'string') {
+        message = detail;
+      }
+      alert('Error al añadir dispositivo: ' + message);
+    }
+  });
+
+  const editDeviceMutation = useMutation({
+    mutationFn: (updatedDevice) => api.put(`/devices/${editingDevice.id}`, updatedDevice),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['devices'] });
+      queryClient.invalidateQueries({ queryKey: ['cameras'] });
+      closeModal();
+    },
+    onError: (error) => {
+      alert('Error al editar dispositivo: ' + error.message);
+    }
+  });
+
+
+  const handleScan = async () => {
+    setIsScanning(true);
+    setDiscoveredDevices([]);
+    try {
+      const response = await api.get('/devices/scan');
+      setDiscoveredDevices(response.data);
+    } catch (error) {
+      alert('Error al escanear la red: ' + error.message);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const adoptDevice = (device) => {
+    setEditingDevice(null);
+    setFormData({
+      ...formData,
+      name: `CCTV ${device.model}`,
+      host: device.host,
+      port: parseInt(device.port) || 80,
+      brand: device.brand || 'Hikvision',
+      channel_count: 8
+    });
+    setIsModalOpen(true);
+  };
+
+  const editDevice = (device) => {
+    setEditingDevice(device);
+    setFormData({
+      name: device.name,
+      host: device.host,
+      port: device.port,
+      username: device.username,
+      password: '',
+      device_type: device.device_type,
+      brand: device.brand,
+      channel_count: device.channel_count || 8
+    });
+    setIsModalOpen(true);
+  };
+
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setEditingDevice(null);
+    setFormData({ name: '', host: '', port: 80, username: 'admin', password: '', device_type: 'DVR', brand: 'Hikvision', channel_count: 8 });
+  };
+
+
+  const toggleExpand = (deviceId) => {
+    const next = new Set(expandedDevices);
+    if (next.has(deviceId)) {
+      next.delete(deviceId);
+    } else {
+      next.add(deviceId);
+    }
+    setExpandedDevices(next);
+  };
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (editingDevice) {
+      editDeviceMutation.mutate(formData);
+    } else {
+      addDeviceMutation.mutate(formData);
+    }
+  };
+
+  return (
+    <div className="p-8 space-y-6">
+      <header className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Gestión de Dispositivos</h1>
+          <p className="text-zinc-500">Administra tus grabadores Hikvision y Ezviz.</p>
+        </div>
+        
+        <div className="flex gap-3">
+          <button 
+            onClick={handleScan}
+            disabled={isScanning}
+            className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 px-5 py-2.5 rounded-xl font-semibold transition-all border border-zinc-700 active:scale-95 disabled:opacity-50"
+          >
+            <Radar size={20} className={isScanning ? 'animate-spin' : ''} />
+            {isScanning ? 'Escaneando...' : 'Escanear Red'}
+          </button>
+          
+          <button 
+            onClick={() => setIsModalOpen(true)}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-xl font-semibold transition-all shadow-lg shadow-blue-900/20 active:scale-95"
+          >
+            <Plus size={20} />
+            Añadir Manual
+          </button>
+        </div>
+      </header>
+
+      {/* Discovered Devices Row */}
+      {discoveredDevices.length > 0 && (
+        <div className="space-y-3 animate-in slide-in-from-top-4 duration-500">
+          <h2 className="text-sm font-bold text-zinc-500 uppercase flex items-center gap-2">
+            <CheckCircle2 size={16} className="text-emerald-500" />
+            Dispositivos Encontrados en la Red ({discoveredDevices.length})
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {discoveredDevices.map((dev, idx) => (
+              <div key={idx} className="card-zinc bg-zinc-900/50 flex justify-between items-center group">
+                <div>
+                  <p className="font-bold text-zinc-200">{dev.model}</p>
+                  <p className="text-xs text-zinc-500 font-mono">{dev.host}</p>
+                </div>
+                <button 
+                  onClick={() => adoptDevice(dev)}
+                  className="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-500 hover:text-white text-xs font-bold rounded-lg transition-all border border-emerald-500/20"
+                >
+                  Adoptar
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Devices Table */}
+      <div className="card-zinc p-0 overflow-hidden">
+        <table className="w-full text-left">
+          <thead>
+            <tr className="bg-zinc-900/50 border-b border-zinc-800">
+              <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Dispositivo</th>
+              <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Host/IP</th>
+              <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Tipo</th>
+              <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Estado</th>
+              <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500 text-right">Acciones</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-800">
+            {isLoading ? (
+              <tr><td colSpan="5" className="px-6 py-10 text-center text-zinc-500">Cargando dispositivos...</td></tr>
+            ) : devices.length === 0 ? (
+              <tr><td colSpan="5" className="px-6 py-10 text-center text-zinc-500">No hay dispositivos registrados.</td></tr>
+            ) : devices.map((device) => {
+              return (
+                <tr 
+                  key={device.id} 
+                  onClick={() => setActiveMonitorDevice(device)}
+                  className="hover:bg-zinc-800/30 cursor-pointer transition-colors group"
+                >
+                  <td className="px-6 py-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-400 group-hover:text-blue-400 group-hover:bg-blue-950/20 transition-all">
+                        <Monitor size={20} />
+                      </div>
+                      <div>
+                        <p className="font-bold text-zinc-200 group-hover:text-white transition-colors">{device.name}</p>
+                        <p className="text-xs text-zinc-500">{device.brand}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 font-mono text-sm text-zinc-400">{device.host}:{device.port}</td>
+                  <td className="px-6 py-4 text-zinc-400 text-sm">{device.device_type}</td>
+                  <td className="px-6 py-4">
+                    <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                      device.is_online ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
+                    }`}>
+                      {device.is_online ? 'Online' : 'Offline'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
+                    <div className="flex justify-end gap-2">
+                      <button 
+                        onClick={() => setActiveMonitorDevice(device)}
+                        className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-blue-400 transition-colors"
+                        title="Ver monitor"
+                      >
+                        <Monitor size={18} />
+                      </button>
+                      <button 
+                        onClick={() => editDevice(device)}
+                        className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-blue-400 transition-colors"
+                        title="Editar grabador"
+                      >
+                        <Edit3 size={18} />
+                      </button>
+                      {device.is_online && (
+                        <>
+                          <button 
+                            onClick={() => {
+                              if(confirm('¿Reiniciar dispositivo ' + device.name + '?')) {
+                                api.post('/devices/' + device.id + '/reboot').then(res => {
+                                  alert(res.data.message);
+                                }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
+                              }
+                            }}
+                            className="p-2 hover:bg-yellow-500/10 rounded-lg text-zinc-400 hover:text-yellow-500 transition-colors"
+                            title="Reiniciar dispositivo"
+                          >
+                            <RotateCw size={18} />
+                          </button>
+                          <button 
+                            onClick={() => {
+                              if(confirm('¿Apagar dispositivo ' + device.name + '? Algunos modelos no soportan apagado por software.')) {
+                                api.post('/devices/' + device.id + '/shutdown').then(res => {
+                                  alert(res.data.message);
+                                }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
+                              }
+                            }}
+                            className="p-2 hover:bg-rose-500/10 rounded-lg text-zinc-400 hover:text-rose-400 transition-colors"
+                            title="Apagar dispositivo"
+                          >
+                            <Power size={18} />
+                          </button>
+                        </>
+                      )}
+                      <button 
+                        onClick={() => queryClient.invalidateQueries({ queryKey: ['devices'] })}
+                        className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 transition-colors"
+                        title="Refrescar estado"
+                      >
+                        <RefreshCw size={18} />
+                      </button>
+                      <button 
+                        onClick={() => {
+                          if(confirm('¿Eliminar dispositivo ' + device.name + '? Esto eliminará también sus cámaras.')) {
+                            api.delete('/devices/' + device.id).then(() => {
+                              queryClient.invalidateQueries({ queryKey: ['devices'] });
+                              queryClient.invalidateQueries({ queryKey: ['cameras'] });
+                              queryClient.invalidateQueries({ queryKey: ['reports'] });
+                            }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
+                          }
+                        }}
+
+                        className="p-2 hover:bg-rose-500/10 rounded-lg text-zinc-400 hover:text-rose-400 transition-colors"
+                        title="Eliminar dispositivo"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Device Channel Monitor Modal */}
+      {activeMonitorDevice && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-6 bg-black/90 backdrop-blur-md animate-in fade-in duration-200"
+          onClick={() => setActiveMonitorDevice(null)}
+        >
+          <div 
+            className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-[96vw] h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="p-4 md:px-6 md:py-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-400">
+                  <Monitor size={20} />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold flex items-center gap-2">
+                    {activeMonitorDevice.name}
+                    <span className={`w-2.5 h-2.5 rounded-full ${activeMonitorDevice.is_online ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]' : 'bg-rose-500'}`} />
+                  </h2>
+                  <p className="text-xs text-zinc-500 font-mono">
+                    {activeMonitorDevice.brand} • {activeMonitorDevice.host}:{activeMonitorDevice.port}
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                {activeMonitorDevice.is_online && (
+                  <>
+                    <button 
+                      onClick={() => {
+                        if(confirm('¿Reiniciar dispositivo ' + activeMonitorDevice.name + '?')) {
+                          api.post('/devices/' + activeMonitorDevice.id + '/reboot').then(res => {
+                            alert(res.data.message);
+                            setActiveMonitorDevice(null);
+                          }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
+                        }
+                      }}
+                      className="bg-yellow-600 hover:bg-yellow-500 text-white px-4 py-2 rounded-lg font-medium transition-all text-sm shadow-md flex items-center gap-1.5 cursor-pointer active:scale-95"
+                    >
+                      <RotateCw size={16} />
+                      Reiniciar
+                    </button>
+                    <button 
+                      onClick={() => {
+                        if(confirm('¿Apagar dispositivo ' + activeMonitorDevice.name + '? Algunos modelos no soportan apagado por software.')) {
+                          api.post('/devices/' + activeMonitorDevice.id + '/shutdown').then(res => {
+                            alert(res.data.message);
+                            setActiveMonitorDevice(null);
+                          }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
+                        }
+                      }}
+                      className="bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 rounded-lg font-medium transition-all text-sm shadow-md flex items-center gap-1.5 cursor-pointer active:scale-95"
+                    >
+                      <Power size={16} />
+                      Apagar
+                    </button>
+                  </>
+                )}
+                <button 
+                  onClick={() => setActiveMonitorDevice(null)} 
+                  className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white px-4 py-2 rounded-lg font-medium transition-all text-sm shadow-md active:scale-95"
+                >
+                  Cerrar Monitor
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Content - Camera Grid */}
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-zinc-950/40">
+              {isLoadingCameras ? (
+                <div className="flex items-center justify-center h-full text-zinc-500 gap-2">
+                  <RefreshCw className="animate-spin text-blue-500" size={24} />
+                  <span>Cargando canales...</span>
+                </div>
+              ) : cameras.filter(c => c.device_id === activeMonitorDevice.id).length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-zinc-500 gap-3">
+                  <p className="italic">No se encontraron canales o cámaras para este dispositivo.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                  {cameras.filter(c => c.device_id === activeMonitorDevice.id).map((camera) => {
+                    const t = cameraRefreshKeys[camera.id] || 'initial';
+                    const snapshotSrc = `${api.defaults.baseURL}/cameras/${camera.id}/snapshot?t=${t}`;
+                    const isSaving = savingCameraIds.has(camera.id);
+                    const isSaved = savedCameraIds.has(camera.id);
+
+                    return (
+                      <div key={camera.id} className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden flex flex-col group/cam hover:border-zinc-700 transition-all duration-300">
+                        {/* Camera Stream/Snapshot view */}
+                        <div className="aspect-video bg-black relative overflow-hidden flex items-center justify-center border-b border-zinc-800">
+                          {isWebRTCAvailable && camera.rtsp_url ? (
+                            <iframe 
+                              src={`http://${window.location.hostname}:1984/webrtc.html?src=camera_${camera.id}&mode=webrtc`} 
+                              title={camera.name}
+                              className="absolute inset-0 w-full h-full border-0 pointer-events-none"
+                              scrolling="no"
+                              allow="autoplay; fullscreen"
+                            />
+                          ) : (
+                            <img 
+                              src={snapshotSrc} 
+                              alt={camera.name}
+                              className="w-full h-full object-cover"
+                              onError={(e) => { 
+                                e.target.onerror = null; 
+                                e.target.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="%233f3f46" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
+                              }}
+                            />
+                          )}
+                          
+                          {/* Channel Badge */}
+                          <span className="absolute top-2 left-2 bg-black/60 backdrop-blur-md text-[10px] font-bold font-mono text-zinc-300 px-2.5 py-0.5 rounded-full border border-zinc-700/50 shadow-lg">
+                            Canal {camera.channel}
+                          </span>
+
+                          {/* Manual Refresh Overlay (only if WebRTC is not running) */}
+                          {!(isWebRTCAvailable && camera.rtsp_url) && (
+                            <button 
+                              type="button"
+                              onClick={() => refreshCameraSnapshot(camera.id)}
+                              className="absolute inset-0 bg-black/60 opacity-0 group-hover/cam:opacity-100 transition-opacity flex items-center justify-center text-xs text-zinc-300 font-bold"
+                              title="Refrescar captura"
+                            >
+                              Refrescar
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Camera Settings Form */}
+                        <div className="p-3 space-y-3 flex-1 flex flex-col justify-between bg-zinc-900/40">
+                          <div className="flex gap-2 items-center">
+                            <input 
+                              type="text" 
+                              defaultValue={camera.name} 
+                              id={`modal-cam-name-${camera.id}`}
+                              className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-blue-500 font-medium"
+                              placeholder="Nombre del canal"
+                            />
+                            
+                            <button 
+                              disabled={isSaving}
+                              onClick={() => {
+                                const newName = document.getElementById(`modal-cam-name-${camera.id}`).value;
+                                const newActive = document.getElementById(`modal-cam-active-${camera.id}`).checked;
+                                
+                                setSavingCameraIds(prev => new Set([...prev, camera.id]));
+                                api.put(`/cameras/${camera.id}`, { name: newName, is_active: newActive }).then(() => {
+                                  queryClient.invalidateQueries({ queryKey: ['cameras'] });
+                                  setSavingCameraIds(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(camera.id);
+                                    return next;
+                                  });
+                                  setSavedCameraIds(prev => new Set([...prev, camera.id]));
+                                  setTimeout(() => {
+                                    setSavedCameraIds(prev => {
+                                      const next = new Set(prev);
+                                      next.delete(camera.id);
+                                      return next;
+                                    });
+                                  }, 2000);
+                                }).catch(err => {
+                                  setSavingCameraIds(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(camera.id);
+                                    return next;
+                                  });
+                                  alert('Error: ' + err.message);
+                                });
+                              }}
+                              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all min-w-[70px] text-center cursor-pointer ${
+                                isSaved ? 'bg-emerald-500/20 text-emerald-500' :
+                                isSaving ? 'bg-zinc-800 text-zinc-500' :
+                                'bg-blue-600 hover:bg-blue-500 text-white shadow-md shadow-blue-600/10 active:scale-95'
+                              }`}
+                            >
+                              {isSaved ? '✓' : isSaving ? '...' : 'Guardar'}
+                            </button>
+                          </div>
+
+                          <div className="flex items-center justify-between text-xs">
+                            <label className="flex items-center gap-2 text-zinc-400 cursor-pointer select-none hover:text-zinc-200 transition-colors">
+                              <input 
+                                type="checkbox" 
+                                defaultChecked={camera.is_active} 
+                                id={`modal-cam-active-${camera.id}`}
+                                className="rounded border-zinc-800 bg-zinc-950 text-blue-600 focus:ring-0 focus:ring-offset-0"
+                              />
+                              <span>Habilitar en Muro</span>
+                            </label>
+                            
+                            <span className="text-[10px] font-bold font-mono text-zinc-500 bg-zinc-950 border border-zinc-800 px-1.5 py-0.5 rounded">
+                              CH {camera.channel}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+
+
+      {/* Add/Edit Device Modal */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden scale-in">
+            <div className="p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+              <h2 className="text-xl font-bold">{editingDevice ? 'Editar Grabador / Dispositivo' : 'Nuevo Dispositivo'}</h2>
+              <button onClick={closeModal} className="text-zinc-500 hover:text-zinc-300">✕</button>
+            </div>
+            
+            <form onSubmit={handleSubmit} className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2 space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-500 uppercase">Nombre</label>
+                  <input required className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-500 uppercase">Host / IP</label>
+                  <input required className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono" value={formData.host} onChange={(e) => setFormData({...formData, host: e.target.value})} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-500 uppercase">Puerto</label>
+                  <input type="number" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.port} onChange={(e) => setFormData({...formData, port: parseInt(e.target.value) || 80})} />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-500 uppercase">Marca</label>
+                  <select className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.brand} onChange={(e) => setFormData({...formData, brand: e.target.value})}>
+                    <option value="Hikvision">Hikvision</option>
+                    <option value="Ezviz">Ezviz</option>
+                    <option value="Dahua">Dahua</option>
+                    <option value="HiLook">HiLook</option>
+                    <option value="Uniview">Uniview</option>
+                    <option value="Generico">Genérico / RTSP</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-500 uppercase">Tipo</label>
+                  <select className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.device_type} onChange={(e) => setFormData({...formData, device_type: e.target.value})}>
+                    <option value="DVR">DVR</option>
+                    <option value="NVR">NVR</option>
+                    <option value="IPC">Cámara IP</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-500 uppercase">Canales del DVR</label>
+                  <select className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.channel_count} onChange={(e) => setFormData({...formData, channel_count: parseInt(e.target.value)})}>
+                    <option value={4}>4 Canales</option>
+                    <option value={8}>8 Canales</option>
+                    <option value={16}>16 Canales</option>
+                    <option value={32}>32 Canales</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-500 uppercase">
+                    {editingDevice ? 'Nueva Contraseña (Opcional)' : 'Contraseña'}
+                  </label>
+                  <input 
+                    type="password" 
+                    required={!editingDevice} 
+                    placeholder={editingDevice ? 'Dejar en blanco para mantener la actual' : '••••••••'}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" 
+                    value={formData.password} 
+                    onChange={(e) => setFormData({...formData, password: e.target.value})} 
+                  />
+                </div>
+              </div>
+              
+              <div className="pt-4 flex gap-3">
+                <button type="button" onClick={closeModal} className="flex-1 px-4 py-2 bg-zinc-800 text-zinc-300 rounded-lg font-bold cursor-pointer">Cancelar</button>
+                <button type="submit" disabled={addDeviceMutation.isPending || editDeviceMutation.isPending} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold disabled:opacity-50 cursor-pointer">
+                  {addDeviceMutation.isPending || editDeviceMutation.isPending ? 'Guardando...' : 'Guardar'}
+                </button>
+              </div>
+
+            </form>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+};
+
+export default DeviceMgmt;

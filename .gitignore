@@ -1,0 +1,49 @@
+# Virtual environments
+.venv/
+backend/venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Databases & local configs
+*.db
+*.sqlite
+*.sqlite3
+sql_app.db
+backend/cctv.db
+backend/go2rtc.yaml
+
+# Executables & builds
+dist/
+build/
+*.exe
+go2rtc.exe
+backend/go2rtc.exe
+
+# Frontend / Node
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+*.local
+
+# Environment variables & secrets
+.env
+backend/.env
+*.env
+
+# IDE & temporary
+.vscode/
+.idea/
+.kombai/
+brain/
+.system_generated/
+*.log
+Thumbs.db
+.DS_Store
