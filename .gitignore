@@ -47,3 +47,7 @@ brain/
 *.log
 Thumbs.db
 .DS_Store
+Output/
+backend/storage/
+backend/scratch_*.py
+

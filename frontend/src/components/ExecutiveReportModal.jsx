@@ -1,34 +1,121 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { 
   Printer, 
   X, 
+  Shield, 
   CheckCircle2, 
   AlertTriangle, 
   AlertCircle, 
-  Server, 
-  Video, 
-  ShieldCheck, 
-  Activity, 
-  Calendar,
-  Layers,
+  Server,
+  Activity,
+  FileCheck2,
+  HardDrive,
+  Clock,
+  Video,
   Radio,
-  FileSpreadsheet
+  Layers,
+  Disc,
+  Image as ImageIcon,
+  Camera as CameraIcon,
+  FileSignature,
+  BadgeCheck,
+  CheckCheck,
+  KeyRound,
+  RotateCcw,
+  Plus,
+  History,
+  FileText
 } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
-const ExecutiveReportModal = ({ isOpen, onClose }) => {
+const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => {
   const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const [signingRole, setSigningRole] = useState(null);
+  const [selectedReportCode, setSelectedReportCode] = useState(initialReportCode);
+  const [isGeneratingNew, setIsGeneratingNew] = useState(false);
 
-  const { data: summary, isLoading, isError } = useQuery({
-    queryKey: ['executiveSummary'],
+  React.useEffect(() => {
+    if (isOpen) {
+      setSelectedReportCode(initialReportCode || null);
+    }
+  }, [isOpen, initialReportCode]);
+
+  // Consulta del informe ejecutivo activo o seleccionado
+  const { data: summary, isLoading, isError, isFetching } = useQuery({
+    queryKey: ['executiveSummary', selectedReportCode],
     queryFn: async () => {
-      const res = await api.get('/reports/executive-summary');
+      const params = {};
+      if (selectedReportCode) {
+        params.report_code = selectedReportCode;
+      }
+      const res = await api.get('/reports/executive-summary', { params });
       return res.data;
     },
     enabled: isOpen,
     refetchOnWindowFocus: false
+  });
+
+  // Consulta del historial de informes generados
+  const { data: history = [] } = useQuery({
+    queryKey: ['auditReportsHistory'],
+    queryFn: async () => {
+      const res = await api.get('/reports/history');
+      return res.data;
+    },
+    enabled: isOpen
+  });
+
+  // Generar un nuevo informe oficial con nuevo correlativo consecutivo
+  const handleGenerateNew = async () => {
+    setIsGeneratingNew(true);
+    try {
+      const res = await api.get('/reports/executive-summary', { params: { force_new: true } });
+      if (res.data && res.data.report_code) {
+        setSelectedReportCode(res.data.report_code);
+        queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
+        queryClient.invalidateQueries({ queryKey: ['auditReportsHistory'] });
+      }
+    } catch (err) {
+      alert("Error al generar nuevo informe: " + (err.response?.data?.detail || err.message));
+    } finally {
+      setIsGeneratingNew(false);
+    }
+  };
+
+  const signMutation = useMutation({
+    mutationFn: async (roleType) => {
+      setSigningRole(roleType);
+      const res = await api.post(`/reports/${summary.report_code}/sign`, null, {
+        params: { role_type: roleType }
+      });
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
+      queryClient.invalidateQueries({ queryKey: ['auditReportsHistory'] });
+      setSigningRole(null);
+    },
+    onError: (err) => {
+      alert("Error al registrar la firma digital: " + (err.response?.data?.detail || err.message));
+      setSigningRole(null);
+    }
+  });
+
+  const resetMutation = useMutation({
+    mutationFn: async () => {
+      const res = await api.post(`/reports/${summary.report_code}/reset-signatures`);
+      return res.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
+      queryClient.invalidateQueries({ queryKey: ['auditReportsHistory'] });
+    },
+    onError: (err) => {
+      alert("Error al reiniciar firmas: " + (err.response?.data?.detail || err.message));
+    }
   });
 
   if (!isOpen) return null;
@@ -36,267 +123,592 @@ const ExecutiveReportModal = ({ isOpen, onClose }) => {
   const kpis = summary?.kpis || {};
   const devices = summary?.devices || [];
   const incidents = summary?.recent_incidents || [];
+  const signatures = summary?.signatures || {};
+  const techSig = signatures.technician || {};
+  const coordSig = signatures.coordinator || {};
+  const reportTimeKey = summary?.generated_at ? new Date(summary.generated_at).getTime() : Date.now();
 
-  const getSlaBadge = (sla) => {
-    if (sla >= 90) return { label: 'Excelente / Óptimo', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' };
-    if (sla >= 75) return { label: 'Atención Requerida', color: 'text-amber-400 bg-amber-500/10 border-amber-500/30' };
-    return { label: 'Crítico / Falla Operativa', color: 'text-rose-400 bg-rose-500/10 border-rose-500/30' };
-  };
-
-  const getDeviceHealthBadge = (health) => {
-    switch (health) {
-      case 'optimal':
-        return { label: 'Óptimo (100% Canales)', bg: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', icon: CheckCircle2 };
-      case 'warning':
-        return { label: 'Advertencia (Canales Inactivos)', bg: 'bg-amber-500/10 text-amber-400 border-amber-500/30', icon: AlertTriangle };
-      default:
-        return { label: 'Crítico (DVR Desconectado)', bg: 'bg-rose-500/10 text-rose-400 border-rose-500/30', icon: AlertCircle };
-    }
-  };
+  const userRoleStr = String(user?.role?.value || user?.role || '').toLowerCase();
+  const isAdmin = userRoleStr === 'admin' || user?.username === 'admin';
 
   const handlePrint = () => {
+    const originalTitle = document.title;
+    const filename = summary?.pdf_filename || `${summary?.report_code || 'INF-CCTV'}_Informe_Ejecutivo_CCTV`;
+    document.title = filename;
     window.print();
+    setTimeout(() => {
+      document.title = originalTitle;
+    }, 2500);
   };
 
+  // Veredicto formal
+  const getOverallVerdict = (sla, unhealthyHdd, driftedCount) => {
+    if (unhealthyHdd > 0 || sla < 75) {
+      return { text: 'NO CONFORME / CRÍTICO (REVISAR ALMACENAMIENTO)', color: 'bg-rose-50 text-rose-900 border-rose-400' };
+    }
+    if (sla >= 92 && driftedCount === 0) {
+      return { text: 'CONFORME / ÓPTIMO', color: 'bg-emerald-50 text-emerald-800 border-emerald-300' };
+    }
+    return { text: 'CONFORME CON OBSERVACIONES', color: 'bg-amber-50 text-amber-900 border-amber-400' };
+  };
+
+  const verdict = getOverallVerdict(kpis.overall_sla || 0, kpis.hdd_unhealthy_devices || 0, kpis.drifted_devices_count || 0);
+  const completedSignaturesCount = (techSig.signed ? 1 : 0) + (coordSig.signed ? 1 : 0);
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-md flex items-center justify-center p-2 sm:p-4 print:p-0 print:bg-white print:static">
-      <div className="bg-zinc-950 border border-zinc-800 rounded-3xl w-full max-w-5xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh] print:max-h-none print:border-none print:shadow-none print:bg-white print:text-black">
+    <div 
+      id="executive-report-modal-wrapper"
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/70 backdrop-blur-sm flex items-center justify-center p-0 sm:p-4 print:p-0 print:bg-white print:static print:overflow-visible print:inset-auto"
+    >
+      {/* Modal Main Frame */}
+      <div 
+        id="executive-report-modal-frame"
+        className="bg-white text-slate-900 rounded-xl w-full max-w-5xl shadow-2xl overflow-hidden flex flex-col max-h-[96vh] print:max-h-none print:border-none print:shadow-none print:bg-white print:rounded-none print:w-full print:m-0 print:p-0"
+      >
         
-        {/* Modal Top Bar (Hidden in Print) */}
-        <div className="p-4 sm:p-6 bg-zinc-900/80 border-b border-zinc-800 flex justify-between items-center print:hidden">
+        {/* Top Control Bar (Screen only) */}
+        <div className="p-3.5 bg-slate-900 text-white border-b border-slate-800 flex flex-wrap justify-between items-center gap-3 print:hidden no-print">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-blue-600/20 border border-blue-500/30 rounded-xl flex items-center justify-center text-blue-400">
-              <FileSpreadsheet size={22} />
+            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white shrink-0">
+              <FileCheck2 size={18} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">Reporte Ejecutivo de Infraestructura CCTV</h2>
-              <p className="text-xs text-zinc-400">Auditoría consolidada de disponibilidad, grabadores y cámaras</p>
+              <div className="flex items-center gap-2">
+                <h2 className="text-xs sm:text-sm font-bold uppercase tracking-wider">Informe Técnico Ejecutivo</h2>
+                <span className="font-mono text-[10px] bg-blue-950 text-blue-300 px-2 py-0.5 rounded border border-blue-700/60 font-bold">
+                  {summary?.report_code || 'INF-CCTV'}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400">Verificación de Discos Duros (HDD), Modalidad de Grabación y Firmas Digitales</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Selector de Historial de Informes */}
+            {history.length > 0 && (
+              <div className="flex items-center gap-1.5 bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-700 text-xs">
+                <History size={13} className="text-slate-400" />
+                <select
+                  value={selectedReportCode || summary?.report_code || ''}
+                  onChange={(e) => setSelectedReportCode(e.target.value)}
+                  className="bg-transparent text-slate-200 font-mono text-[11px] outline-none cursor-pointer font-bold"
+                  title="Cambiar a otro informe generado previamente"
+                >
+                  {history.map((h) => (
+                    <option key={h.id} value={h.report_code} className="bg-slate-900 text-white">
+                      {h.report_code} ({new Date(h.created_at).toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Botón para Generar Nuevo Informe con Nuevo Correlativo */}
+            <button
+              type="button"
+              onClick={handleGenerateNew}
+              disabled={isGeneratingNew}
+              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow active:scale-95 cursor-pointer"
+              title="Generar un nuevo informe de auditoría con nuevo código correlativo"
+            >
+              <Plus size={14} className={isGeneratingNew ? 'animate-spin' : ''} />
+              <span>{isGeneratingNew ? 'Generando...' : 'Nuevo Informe (+)'}</span>
+            </button>
+
+            {/* Botón de Reinicio de Firmas (Solo Admin si hay firmas) */}
+            {isAdmin && completedSignaturesCount > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (confirm("¿Deseas reiniciar las firmas digitales de este informe para un nuevo proceso de validación?")) {
+                    resetMutation.mutate();
+                  }
+                }}
+                disabled={resetMutation.isPending}
+                className="flex items-center gap-1 bg-zinc-800 hover:bg-rose-900/60 text-zinc-300 hover:text-rose-200 border border-zinc-700 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-95 cursor-pointer"
+                title="Reiniciar firmas digitales de este informe"
+              >
+                <RotateCcw size={12} className={resetMutation.isPending ? 'animate-spin' : ''} />
+                <span className="hidden sm:inline">Limpiar Firmas</span>
+              </button>
+            )}
+
             <button
               onClick={handlePrint}
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-lg shadow-blue-600/30 active:scale-95 cursor-pointer"
+              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95 cursor-pointer"
             >
-              <Printer size={16} />
-              Imprimir / Guardar PDF
+              <Printer size={14} />
+              Imprimir / PDF
             </button>
             <button
               onClick={onClose}
-              className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white transition-all cursor-pointer"
+              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer"
+              title="Cerrar"
             >
               <X size={18} />
             </button>
           </div>
         </div>
 
-        {/* Modal Scrollable Content / Printable Body */}
-        <div className="p-6 sm:p-8 overflow-y-auto space-y-8 print:p-6 print:space-y-6 print:text-black">
-          
-          {isLoading ? (
-            <div className="py-20 text-center space-y-4">
-              <div className="w-10 h-10 border-2 border-blue-500/20 border-t-blue-500 rounded-full animate-spin mx-auto" />
-              <p className="text-zinc-400 text-sm">Generando consolidado ejecutivo...</p>
-            </div>
-          ) : isError || !summary ? (
-            <div className="py-16 text-center text-rose-400">
-              <AlertCircle size={40} className="mx-auto mb-2 opacity-50" />
-              <p>Ocurrió un error al cargar los datos del reporte ejecutivo.</p>
-            </div>
-          ) : (
-            <>
-              {/* Document Header */}
-              <div className="border-b border-zinc-800 print:border-zinc-300 pb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-widest bg-blue-500/10 border border-blue-500/30 text-blue-400 print:border-blue-600 print:text-blue-700">
-                      DOCUMENTO OFICIAL
-                    </span>
-                    <span className="text-xs text-zinc-500 print:text-zinc-600">CONFIDENCIAL</span>
-                  </div>
-                  <h1 className="text-2xl sm:text-3xl font-extrabold text-white print:text-black tracking-tight mt-1">
-                    Reporte Ejecutivo de Seguridad & Videovigilancia
-                  </h1>
-                  <p className="text-xs text-zinc-400 print:text-zinc-600 mt-1">
-                    Sistema Centralizado: <strong className="text-zinc-200 print:text-black">{summary.project_name}</strong> &bull; Emisión: {new Date(summary.generated_at).toLocaleString('es-PE')}
-                  </p>
-                </div>
-
-                <div className="flex flex-col sm:items-end">
-                  <span className="text-xs text-zinc-500 print:text-zinc-600">Responsable de Auditoría:</span>
-                  <span className="text-sm font-bold text-zinc-200 print:text-black">{user?.full_name || 'Administrador del Sistema'}</span>
-                  <span className="text-[11px] font-mono text-zinc-500 print:text-zinc-600 uppercase">Rol: {user?.role || 'ADMIN'}</span>
-                </div>
+        {/* Cuerpo del Documento Formal */}
+        <div className="p-6 sm:p-10 overflow-y-auto print:p-0 print:overflow-visible">
+          <div 
+            id="executive-report-document"
+            className="bg-white text-slate-900 mx-auto max-w-[850px] space-y-6 print:max-w-none text-[9.5pt] leading-relaxed font-sans"
+          >
+            {isLoading || isFetching ? (
+              <div className="py-24 text-center space-y-4">
+                <div className="w-10 h-10 border-3 border-slate-300 border-t-blue-600 rounded-full animate-spin mx-auto" />
+                <p className="text-slate-600 text-sm font-medium">Consolidando métricas e informe de auditoría de CCTV...</p>
               </div>
-
-              {/* High-Level KPIs */}
-              <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700 mb-3 flex items-center gap-2">
-                  <Activity size={16} className="text-blue-500" />
-                  1. Indicadores Clave de Desempeño (KPIs de Alto Nivel)
-                </h3>
-
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                  {/* Overall SLA */}
-                  <div className="p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl print:bg-zinc-50 print:border-zinc-300">
-                    <p className="text-xs text-zinc-500 print:text-zinc-600 font-semibold">Disponibilidad (SLA)</p>
-                    <p className="text-2xl sm:text-3xl font-extrabold text-white print:text-black mt-1">
-                      {kpis.overall_sla}%
-                    </p>
-                    <span className={`inline-block mt-2 px-2 py-0.5 rounded-md text-[10px] font-bold border ${getSlaBadge(kpis.overall_sla).color} print:border-zinc-400 print:text-zinc-800`}>
-                      {getSlaBadge(kpis.overall_sla).label}
-                    </span>
-                  </div>
-
-                  {/* DVRs Status */}
-                  <div className="p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl print:bg-zinc-50 print:border-zinc-300">
-                    <p className="text-xs text-zinc-500 print:text-zinc-600 font-semibold">Grabadores (DVR/NVR)</p>
-                    <p className="text-2xl sm:text-3xl font-extrabold text-emerald-400 print:text-emerald-700 mt-1">
-                      {kpis.online_devices} <span className="text-sm font-normal text-zinc-500 print:text-zinc-600">/ {kpis.total_devices}</span>
-                    </p>
-                    <p className="text-[11px] text-zinc-400 print:text-zinc-600 mt-2">
-                      {kpis.device_availability_pct}% equipos en línea
-                    </p>
-                  </div>
-
-                  {/* Cameras Status */}
-                  <div className="p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl print:bg-zinc-50 print:border-zinc-300">
-                    <p className="text-xs text-zinc-500 print:text-zinc-600 font-semibold">Cámaras Operativas</p>
-                    <p className="text-2xl sm:text-3xl font-extrabold text-blue-400 print:text-blue-700 mt-1">
-                      {kpis.active_cameras} <span className="text-sm font-normal text-zinc-500 print:text-zinc-600">/ {kpis.total_cameras}</span>
-                    </p>
-                    <p className="text-[11px] text-zinc-400 print:text-zinc-600 mt-2">
-                      {kpis.inactive_cameras > 0 ? `${kpis.inactive_cameras} canales apagados` : '100% transmitiendo'}
-                    </p>
-                  </div>
-
-                  {/* Critical Alerts */}
-                  <div className="p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl print:bg-zinc-50 print:border-zinc-300">
-                    <p className="text-xs text-zinc-500 print:text-zinc-600 font-semibold">Incidentes Críticos</p>
-                    <p className={`text-2xl sm:text-3xl font-extrabold mt-1 ${kpis.critical_events > 0 ? 'text-rose-400 print:text-rose-700' : 'text-zinc-200 print:text-black'}`}>
-                      {kpis.critical_events}
-                    </p>
-                    <p className="text-[11px] text-zinc-400 print:text-zinc-600 mt-2">
-                      {kpis.total_events} registros totales
-                    </p>
-                  </div>
-                </div>
+            ) : isError || !summary ? (
+              <div className="py-16 text-center text-red-600 space-y-2">
+                <AlertCircle size={44} className="mx-auto text-red-500" />
+                <p className="font-bold">No fue posible generar el informe ejecutivo.</p>
+                <p className="text-xs text-slate-500">Compruebe la conexión con el servidor backend.</p>
               </div>
-
-              {/* DVRs & Cameras Breakdown */}
-              <div className="space-y-4">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700 flex items-center gap-2">
-                  <Server size={16} className="text-emerald-500" />
-                  2. Evaluación Operativa por Grabador (DVR/NVR) y Cámaras
-                </h3>
-
-                <div className="space-y-4">
-                  {devices.map((dev) => {
-                    const health = getDeviceHealthBadge(dev.health_status);
-                    const HealthIcon = health.icon;
-
-                    return (
-                      <div 
-                        key={dev.id}
-                        className="bg-zinc-900/40 border border-zinc-800 rounded-2xl p-5 space-y-4 print:bg-white print:border-zinc-300 print:shadow-sm"
-                      >
-                        {/* DVR Header */}
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-zinc-800/80 print:border-zinc-200 pb-3">
-                          <div className="flex items-center gap-3">
-                            <div className={`w-3 h-3 rounded-full ${dev.is_online ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]' : 'bg-rose-500'}`} />
-                            <div>
-                              <h4 className="text-base font-bold text-white print:text-black">{dev.name}</h4>
-                              <span className="text-xs font-mono text-zinc-400 print:text-zinc-600">
-                                {dev.host}:{dev.port} &bull; Marca: <strong>{dev.brand}</strong> &bull; Tipo: {dev.device_type} &bull; S/N: {dev.serial_number}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            <span className={`px-3 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 ${health.bg} print:border-zinc-400`}>
-                              <HealthIcon size={14} />
-                              {health.label}
-                            </span>
-                            <span className="text-xs font-bold font-mono px-2.5 py-1 bg-zinc-950 border border-zinc-800 rounded-lg text-zinc-300 print:bg-zinc-100 print:text-black print:border-zinc-300">
-                              Canales: {dev.active_cameras} / {dev.channel_count}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Cameras Chips / Grid */}
-                        <div>
-                          <p className="text-[11px] font-bold uppercase tracking-wider text-zinc-500 print:text-zinc-600 mb-2">
-                            Estado de Canales Asignados:
-                          </p>
-                          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2">
-                            {dev.cameras.map((cam) => (
-                              <div
-                                key={cam.id}
-                                className={`p-2.5 rounded-xl border flex flex-col justify-between text-xs transition-all ${
-                                  cam.is_active
-                                    ? 'bg-zinc-950/60 border-zinc-800 text-zinc-200 print:bg-zinc-50 print:border-zinc-300 print:text-black'
-                                    : 'bg-rose-500/5 border-rose-500/20 text-rose-400 print:bg-rose-50 print:text-rose-800'
-                                }`}
-                              >
-                                <div className="flex justify-between items-center mb-1">
-                                  <span className="font-mono font-bold text-[10px] text-zinc-500 print:text-zinc-600">CH {cam.channel}</span>
-                                  <span className={`w-2 h-2 rounded-full ${cam.is_active ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-                                </div>
-                                <p className="font-semibold text-xs truncate" title={cam.name}>
-                                  {cam.name}
-                                </p>
-                                <span className="text-[9px] mt-1 opacity-70 font-mono">
-                                  {cam.is_active ? 'OPERATIVA' : 'DESHABILITADA'}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
+            ) : (
+              <>
+                {/* ==================================================================== */}
+                {/* 1. DATOS GENERALES DEL INFORME / REPORTE                             */}
+                {/* ==================================================================== */}
+                <div className="border-b-2 border-slate-900 pb-4 space-y-4 page-break-avoid">
+                  {/* Membrete Superior */}
+                  <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 text-slate-900 font-black text-sm tracking-wider uppercase">
+                        <Shield size={22} className="text-blue-700 fill-blue-700/10" />
+                        <span>SISTEMA CENTRALIZADO DE SEGURIDAD &amp; VIDEOVIGILANCIA</span>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
+                      <p className="text-[11px] text-slate-600 font-semibold uppercase tracking-wide">
+                        DIVISIÓN DE INFRAESTRUCTURA, CIBERSEGURIDAD Y CONTROL OPERATIVO
+                      </p>
+                    </div>
 
-              {/* Recent Incidents Table */}
-              <div className="space-y-3">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700 flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-rose-500" />
-                  3. Historial de Incidentes y Eventos Críticos Recientes
-                </h3>
-
-                {incidents.length === 0 ? (
-                  <div className="p-6 text-center text-zinc-500 bg-zinc-900/30 border border-zinc-800 rounded-2xl">
-                    <p className="text-xs italic">No se registraron incidentes críticos o fallas de conectividad recientes.</p>
+                    {/* Caja de Control Documentario con Correlativo Único */}
+                    <div className="border border-slate-300 bg-slate-50 p-2.5 rounded text-[9pt] font-mono space-y-0.5 min-w-[240px] shrink-0">
+                      <div><strong className="text-slate-700">CÓDIGO ÚNICO:</strong> <span className="font-black text-blue-900">{summary.report_code}</span></div>
+                      <div><strong className="text-slate-700">CORRELATIVO:</strong> N° <span className="font-bold text-slate-900">{String(summary.report_sequence || 1).padStart(4, '0')}</span></div>
+                      <div>
+                        <strong className="text-slate-700">ESTADO:</strong>{' '}
+                        <span className={`font-bold ${
+                          completedSignaturesCount === 2 
+                            ? 'text-emerald-700' 
+                            : completedSignaturesCount === 1 
+                            ? 'text-amber-700' 
+                            : summary.status === 'rejected'
+                            ? 'text-rose-700'
+                            : 'text-zinc-600'
+                        }`}>
+                          {completedSignaturesCount === 2 
+                            ? 'APROBADO / CONFORME' 
+                            : completedSignaturesCount === 1 
+                            ? 'EMITIDO (ESPERA V° B°)' 
+                            : summary.status === 'rejected'
+                            ? 'RECHAZADO'
+                            : 'BORRADOR (VISTA PREVIA)'}
+                        </span>
+                      </div>
+                      <div><strong className="text-slate-700">CLASIFICACIÓN:</strong> <span className="font-bold text-red-700">CONFIDENCIAL</span></div>
+                      <div><strong className="text-slate-700">EMISIÓN:</strong> {new Date(summary.generated_at).toLocaleDateString('es-PE')}</div>
+                    </div>
                   </div>
-                ) : (
-                  <div className="border border-zinc-800 print:border-zinc-300 rounded-2xl overflow-hidden">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-zinc-900/60 print:bg-zinc-100 border-b border-zinc-800 print:border-zinc-300">
+
+                  {/* Título Principal */}
+                  <div>
+                    <h1 className="text-xl sm:text-2xl font-black text-slate-950 uppercase tracking-tight">
+                      Informe Ejecutivo de Auditoría, Grabación y Estado Operativo CCTV
+                    </h1>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      Auditoría integral de integridad de almacenamiento (HDD), modalidad de grabación activa, sincronización horaria y validación de firmas digitales.
+                    </p>
+                  </div>
+
+                  {/* Tabla de Datos Generales del Informe */}
+                  <div className="border border-slate-300 rounded overflow-hidden text-xs">
+                    <table className="w-full text-left border-collapse">
+                      <tbody>
+                        <tr className="border-b border-slate-200 bg-slate-50">
+                          <td className="p-2 font-bold text-slate-700 w-1/4 bg-slate-100 border-r border-slate-200">Sistema / Entorno:</td>
+                          <td className="p-2 text-slate-900 w-1/4 border-r border-slate-200 font-semibold">{summary.project_name}</td>
+                          <td className="p-2 font-bold text-slate-700 w-1/4 bg-slate-100 border-r border-slate-200">Usuario en Sesión:</td>
+                          <td className="p-2 text-slate-900 w-1/4 font-semibold">{user?.full_name || user?.username || 'Administrador'}</td>
+                        </tr>
+                        <tr className="border-b border-slate-200">
+                          <td className="p-2 font-bold text-slate-700 bg-slate-100 border-r border-slate-200">Fecha y Hora de Emisión:</td>
+                          <td className="p-2 text-slate-900 font-mono border-r border-slate-200">{new Date(summary.generated_at).toLocaleString('es-PE')}</td>
+                          <td className="p-2 font-bold text-slate-700 bg-slate-100 border-r border-slate-200">Rol / Perfil:</td>
+                          <td className="p-2 text-slate-900 uppercase font-semibold">
+                            {isAdmin ? 'Coordinador de TI (Admin)' : 'Técnico de Soporte (Operador)'}
+                          </td>
+                        </tr>
+                        <tr className="bg-slate-50">
+                          <td className="p-2 font-bold text-slate-700 bg-slate-100 border-r border-slate-200">Dictamen Global:</td>
+                          <td colSpan={3} className="p-2">
+                            <span className={`inline-block px-2.5 py-0.5 rounded font-bold text-[10px] tracking-wide uppercase border ${verdict.color}`}>
+                              {summary.status === 'rejected' ? 'RECHAZADO POR COORDINACIÓN' : verdict.text} (SLA: {kpis.overall_sla}%)
+                            </span>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Banner de Informe Rechazado */}
+                  {summary.status === 'rejected' && (
+                    <div className="bg-rose-50 border-2 border-rose-500 rounded-lg p-3 text-rose-950 flex items-start gap-3 page-break-avoid">
+                      <AlertCircle size={20} className="text-rose-600 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <strong className="text-xs font-black text-rose-900 uppercase">INFORME RECHAZADO POR COORDINACIÓN DE TI</strong>
+                          <span className="text-[9px] font-mono bg-rose-200 text-rose-900 px-2 py-0.5 rounded font-bold">
+                            Rechazado por: @{summary.rejected_by || 'admin'} &bull; {summary.rejected_at ? new Date(summary.rejected_at).toLocaleString('es-PE') : ''}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-rose-900 font-medium">
+                          <strong>Motivo de Rechazo:</strong> {summary.rejection_reason || 'Sin justificación especificada.'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ==================================================================== */}
+                {/* 2. RESUMEN EJECUTIVO Y DATOS ESTADÍSTICOS (KPIS)                     */}
+                {/* ==================================================================== */}
+                <div className="space-y-3.5 page-break-avoid">
+                  <div className="flex items-center gap-2 border-b border-slate-300 pb-1">
+                    <span className="bg-slate-900 text-white w-5 h-5 rounded-full inline-flex items-center justify-center text-[10px] font-bold">1</span>
+                    <h2 className="text-xs font-black uppercase tracking-wider text-slate-900">
+                      Resumen Ejecutivo y Datos Estadísticos (KPIs)
+                    </h2>
+                  </div>
+
+                  {/* Diagnóstico en Prosa Ejecutiva */}
+                  <p className="text-xs text-slate-700 text-justify leading-relaxed bg-slate-50 p-3 rounded border border-slate-200">
+                    El presente informe técnico valida la <strong>efectividad de grabación y salud del almacenamiento en disco duro</strong> sobre las cámaras físicamente instaladas en servicio. 
+                    Actualmente, el sistema opera con un <strong>Nivel de Servicio Consolidado (SLA) del {kpis.overall_sla}%</strong>. 
+                    Se registran <strong>{kpis.online_devices} de {kpis.total_devices} grabadores en línea ({kpis.device_availability_pct}%)</strong>, 
+                    con <strong>{kpis.installed_cameras} cámaras físicamente instaladas de una capacidad total de {kpis.total_ports || 32} puertos ({kpis.free_ports || 0} puertos libres en reserva)</strong>. 
+                    El <strong>{kpis.recording_compliance_pct}% de las cámaras instaladas ({kpis.recording_cameras} de {kpis.installed_cameras})</strong> se encuentra en modalidad de grabación continua activa (24/7). 
+                    El <strong>{kpis.hdd_health_pct}% de los grabadores ({kpis.hdd_healthy_devices}/{kpis.total_devices})</strong> cuenta con discos duros en formato correcto y espacio disponible.
+                    {kpis.drifted_devices_count > 0 ? (
+                      ` ⚠️ Atención: Se identificaron ${kpis.drifted_devices_count} grabadores con desfase horario > 5 min respecto al servidor.`
+                    ) : (
+                      ' Todos los grabadores se encuentran sincronizados con la hora del servidor local.'
+                    )}
+                  </p>
+
+                  {/* Fichas / Tarjetas Métricas de KPIs */}
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 pt-1">
+                    <div className="border border-slate-300 p-2.5 rounded-lg bg-slate-50 text-center">
+                      <div className="text-[9.5px] uppercase font-bold text-slate-500 tracking-wide">SLA Operativo</div>
+                      <div className="text-xl font-black text-slate-900 mt-0.5">{kpis.overall_sla}%</div>
+                      <div className="text-[8.5px] font-bold text-emerald-700 uppercase mt-0.5">Meta: &gt;90%</div>
+                    </div>
+
+                    <div className="border border-slate-300 p-2.5 rounded-lg bg-slate-50 text-center">
+                      <div className="text-[9.5px] uppercase font-bold text-slate-500 tracking-wide">Grabando (24/7)</div>
+                      <div className="text-xl font-black text-rose-700 mt-0.5">{kpis.recording_cameras}/{kpis.installed_cameras}</div>
+                      <div className="text-[8.5px] font-bold text-slate-600 uppercase mt-0.5">
+                        {kpis.not_recording_cameras > 0 ? `${kpis.not_recording_cameras} con falla` : '100% graban'}
+                      </div>
+                    </div>
+
+                    <div className="border border-slate-300 p-2.5 rounded-lg bg-slate-50 text-center">
+                      <div className="text-[9.5px] uppercase font-bold text-slate-500 tracking-wide">Puertos DVR</div>
+                      <div className="text-xl font-black text-slate-900 mt-0.5">{kpis.installed_cameras}/{kpis.total_ports || 32}</div>
+                      <div className="text-[8.5px] font-bold text-slate-600 uppercase mt-0.5">{kpis.free_ports || 0} Libres (Reserva)</div>
+                    </div>
+
+                    <div className="border border-slate-300 p-2.5 rounded-lg bg-slate-50 text-center">
+                      <div className="text-[9.5px] uppercase font-bold text-slate-500 tracking-wide">Discos Duros (HDD)</div>
+                      <div className="text-xl font-black text-emerald-700 mt-0.5">{kpis.hdd_healthy_devices}/{kpis.total_devices}</div>
+                      <div className="text-[8.5px] font-bold text-slate-600 uppercase mt-0.5">Formato Correcto</div>
+                    </div>
+
+                    <div className="border border-slate-300 p-2.5 rounded-lg bg-slate-50 text-center">
+                      <div className="text-[9.5px] uppercase font-bold text-slate-500 tracking-wide">Desfase Horario</div>
+                      <div className={`text-xl font-black mt-0.5 ${kpis.drifted_devices_count > 0 ? 'text-amber-700' : 'text-slate-900'}`}>
+                        {kpis.drifted_devices_count}
+                      </div>
+                      <div className="text-[8.5px] font-bold text-slate-600 uppercase mt-0.5">&gt; 5 min de desfase</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ==================================================================== */}
+                {/* 3. DETALLES POR SECCIONES                                            */}
+                {/* ==================================================================== */}
+
+                {/* SECCIÓN 1: MATRIZ DE INFRAESTRUCTURA, ALMACENAMIENTO (HDD) Y HORA */}
+                <div className="space-y-3 page-break-avoid">
+                  <div className="flex items-center gap-2 border-b border-slate-300 pb-1">
+                    <span className="bg-slate-900 text-white w-5 h-5 rounded-full inline-flex items-center justify-center text-[10px] font-bold">2</span>
+                    <h2 className="text-xs font-black uppercase tracking-wider text-slate-900">
+                      Matriz de Grabadores, Estado de Disco Duro (HDD) y Sincronización Horaria
+                    </h2>
+                  </div>
+
+                  <div className="border border-slate-300 rounded overflow-hidden">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="bg-slate-100 text-slate-800 font-bold border-b border-slate-300 uppercase text-[9px]">
                         <tr>
-                          <th className="px-4 py-3 font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700">Fecha y Hora</th>
-                          <th className="px-4 py-3 font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700">Evento</th>
-                          <th className="px-4 py-3 font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700">Severidad</th>
-                          <th className="px-4 py-3 font-bold uppercase tracking-wider text-zinc-400 print:text-zinc-700">Detalle Operativo</th>
+                          <th className="p-2 border-r border-slate-200 text-center w-7">N°</th>
+                          <th className="p-2 border-r border-slate-200 w-32">Grabador / Red</th>
+                          <th className="p-2 border-r border-slate-200 w-40">Disco Duro (HDD) &amp; Salud</th>
+                          <th className="p-2 border-r border-slate-200 w-36">Sincronización Horaria</th>
+                          <th className="p-2 border-r border-slate-200 text-center w-32">Cámaras / Grabación</th>
+                          <th className="p-2 text-center w-24">Estado</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-zinc-800/60 print:divide-zinc-200">
-                        {incidents.map((inc) => (
-                          <tr key={inc.id} className="hover:bg-zinc-900/20">
-                            <td className="px-4 py-2.5 font-mono text-zinc-400 print:text-zinc-600 whitespace-nowrap">
+                      <tbody className="divide-y divide-slate-200 text-[9.5px]">
+                        {devices.map((dev, idx) => {
+                          const hddOk = dev.hdd_is_ok;
+                          const isDrifted = dev.is_time_drifted;
+                          const hasUnrecorded = dev.recording_cameras < dev.installed_cameras;
+
+                          return (
+                            <tr key={dev.id} className="hover:bg-slate-50">
+                              <td className="p-2 border-r border-slate-200 text-center font-bold text-slate-500">{idx + 1}</td>
+                              
+                              <td className="p-2 border-r border-slate-200 font-bold text-slate-900">
+                                {dev.name}
+                                <div className="text-[8.5px] font-normal text-slate-600 font-mono">{dev.host}:{dev.port} &bull; {dev.brand}</div>
+                              </td>
+
+                              <td className="p-2 border-r border-slate-200">
+                                <div className="flex items-center gap-1 font-semibold">
+                                  <HardDrive size={12} className={hddOk ? 'text-emerald-700' : 'text-rose-700'} />
+                                  <span className={hddOk ? 'text-emerald-900' : 'text-rose-900 font-bold'}>
+                                    {dev.hdd_status}
+                                  </span>
+                                </div>
+                                <div className="text-[8.5px] text-slate-500 font-mono mt-0.5">
+                                  Capacidad: {dev.hdd_total_gb} GB
+                                </div>
+                              </td>
+
+                              <td className="p-2 border-r border-slate-200 font-mono">
+                                <div className="flex items-center gap-1 font-sans font-semibold">
+                                  <Clock size={12} className={isDrifted ? 'text-rose-600' : 'text-blue-700'} />
+                                  <span className={isDrifted ? 'text-rose-800 font-bold' : 'text-slate-800'}>
+                                    {isDrifted ? `⚠️ Desfase: ${Math.round((dev.time_offset_seconds || 0)/60)} min` : 'Sincronizado OK'}
+                                  </span>
+                                </div>
+                                <div className="text-[8.5px] text-slate-500 font-mono mt-0.5">
+                                  {dev.device_time ? `Hora: ${new Date(dev.device_time).toLocaleTimeString('es-PE')}` : 'Sin datos'}
+                                </div>
+                              </td>
+
+                              <td className="p-2 border-r border-slate-200 text-center">
+                                <div className="font-bold text-slate-900">
+                                  {dev.recording_cameras} / {dev.installed_cameras} Grabando
+                                </div>
+                                <div className="text-[8.5px] text-slate-500 font-mono">
+                                  ({dev.free_ports} puertos libres en reserva)
+                                </div>
+                              </td>
+
+                              <td className="p-2 text-center">
+                                <span className={`inline-block px-1.5 py-0.5 rounded text-[8.5px] font-bold uppercase border ${
+                                  !dev.is_online || !hddOk
+                                    ? 'bg-rose-50 text-rose-800 border-rose-300'
+                                    : isDrifted || hasUnrecorded
+                                    ? 'bg-amber-50 text-amber-800 border-amber-300'
+                                    : 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                                }`}>
+                                  {!dev.is_online ? 'DESCONECTADO' : !hddOk ? 'FALLA HDD' : isDrifted || hasUnrecorded ? 'OBSERVADO' : 'ÓPTIMO'}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* SECCIÓN 2: DETALLE DE CANALES Y MODALIDAD DE GRABACIÓN */}
+                <div className="space-y-3 page-break-avoid">
+                  <div className="flex items-center gap-2 border-b border-slate-300 pb-1">
+                    <span className="bg-slate-900 text-white w-5 h-5 rounded-full inline-flex items-center justify-center text-[10px] font-bold">3</span>
+                    <h2 className="text-xs font-black uppercase tracking-wider text-slate-900">
+                      Detalle de Cobertura, Señal de Video y Modalidad de Grabación por Cámara
+                    </h2>
+                  </div>
+
+                  <div className="space-y-3">
+                    {devices.map((dev) => (
+                      <div key={dev.id} className="border border-slate-300 rounded p-2.5 bg-slate-50/50 space-y-2">
+                        <div className="flex justify-between items-center border-b border-slate-200 pb-1.5">
+                          <span className="font-bold text-xs text-slate-900">{dev.name} ({dev.host})</span>
+                          <span className="text-[10px] font-mono text-slate-600">
+                            Grabando: <strong className="text-rose-700">{dev.recording_cameras}</strong> / {dev.installed_cameras} instaladas ({dev.free_ports} libres)
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          {(dev.cameras || []).map((cam) => {
+                            const isInstalled = cam.is_installed ?? true;
+                            const isRec = cam.is_recording;
+                            const isAct = cam.is_active;
+
+                            return (
+                              <div 
+                                key={cam.id}
+                                className={`p-2 rounded border text-[9px] flex flex-col justify-between ${
+                                  !isInstalled 
+                                    ? 'bg-slate-100/70 border-slate-200 text-slate-400' 
+                                    : !isRec
+                                    ? 'bg-amber-50 border-amber-300 text-amber-900 font-semibold'
+                                    : 'bg-white border-slate-200 text-slate-900'
+                                }`}
+                              >
+                                <div className="flex justify-between items-center mb-0.5 font-mono">
+                                  <span className="font-bold">CH {cam.channel}</span>
+                                  <span className={`w-2 h-2 rounded-full ${!isInstalled ? 'bg-slate-300' : isAct ? 'bg-emerald-500' : 'bg-rose-400'}`} />
+                                </div>
+                                <p className="font-bold truncate" title={cam.name}>{cam.name}</p>
+                                
+                                <div className="mt-1 pt-1 border-t border-slate-200/60 flex items-center justify-between text-[8px] font-mono">
+                                  <span>{!isInstalled ? 'PUERTO LIBRE' : isAct ? 'SEÑAL OK' : 'SIN SEÑAL'}</span>
+                                  <span className={`font-bold ${!isInstalled ? 'text-slate-400' : isRec ? 'text-rose-700' : 'text-amber-700'}`}>
+                                    {!isInstalled ? '⚪ EN RESERVA' : isRec ? '🔴 GRABANDO' : '⚠️ NO GRABA'}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* ==================================================================== */}
+                {/* 4. ANEXO FOTOGRÁFICO Y EVIDENCIA VISUAL (CAPTURAS POR DISPOSITIVO)   */}
+                {/* ==================================================================== */}
+                <div className="space-y-4 page-break-avoid">
+                  <div className="flex items-center gap-2 border-b border-slate-300 pb-1">
+                    <span className="bg-slate-900 text-white w-5 h-5 rounded-full inline-flex items-center justify-center text-[10px] font-bold">4</span>
+                    <div>
+                      <h2 className="text-xs font-black uppercase tracking-wider text-slate-900 flex items-center gap-1.5">
+                        <ImageIcon size={14} className="text-blue-700" />
+                        Anexo Fotográfico / Evidencia Visual de Cobertura en Vivo
+                      </h2>
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-slate-500 italic">
+                    Capturas instantáneas obtenidas de cada canal al momento de la emisión del reporte para respaldo visual del estado operativo, campo visual y confirmación de grabación.
+                  </p>
+
+                  <div className="space-y-5">
+                    {devices.map((dev) => {
+                      const installedCams = (dev.cameras || []).filter(c => c.is_installed ?? true);
+                      if (installedCams.length === 0) return null;
+
+                      return (
+                        <div key={`photo-dev-${dev.id}`} className="space-y-2.5 border border-slate-200 rounded-lg p-3 bg-slate-50/40 report-photo-grid">
+                          <div className="flex justify-between items-center border-b border-slate-200 pb-1.5 text-xs">
+                            <div className="flex items-center gap-2 font-bold text-slate-900">
+                              <CameraIcon size={14} className="text-slate-600" />
+                              <span>{dev.name}</span>
+                              <span className="font-mono font-normal text-[10px] text-slate-500">({dev.host}:{dev.port} &bull; {dev.brand})</span>
+                            </div>
+                            <span className="text-[9.5px] font-mono text-slate-600 font-semibold">
+                              {installedCams.length} Cámaras en Servicio
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                            {installedCams.map((cam) => {
+                              const snapshotUrl = `${api.defaults.baseURL}/reports/${summary.report_code}/snapshots/${cam.id}`;
+
+                              return (
+                                <div 
+                                  key={`photo-cam-${cam.id}`}
+                                  className="report-photo-card bg-white border border-slate-300 rounded overflow-hidden flex flex-col justify-between shadow-none"
+                                >
+                                  <div className="aspect-video bg-black relative flex items-center justify-center overflow-hidden">
+                                    <img 
+                                      src={snapshotUrl}
+                                      alt={cam.name}
+                                      className="w-full h-full object-cover"
+                                      onError={(e) => {
+                                        e.target.onerror = null;
+                                        e.target.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
+                                      }}
+                                    />
+                                    <span className="absolute top-1 left-1 bg-black/80 text-white font-mono font-bold text-[8px] px-1.5 py-0.5 rounded shadow">
+                                      CH {cam.channel}
+                                    </span>
+                                    <span className={`absolute top-1 right-1 font-bold text-[7.5px] px-1.5 py-0.5 rounded shadow ${
+                                      cam.is_recording ? 'bg-rose-700 text-white' : 'bg-amber-600 text-white'
+                                    }`}>
+                                      {cam.is_recording ? '🔴 REC' : '⚠️ NO REC'}
+                                    </span>
+                                  </div>
+
+                                  <div className="p-1.5 bg-slate-50 border-t border-slate-200">
+                                    <p className="font-bold text-[9px] text-slate-900 truncate leading-tight" title={cam.name}>
+                                      {cam.name}
+                                    </p>
+                                    <div className="flex justify-between items-center text-[7.5px] font-mono text-slate-500 mt-1">
+                                      <span>{cam.is_active ? 'SEÑAL OK' : 'SIN SEÑAL'}</span>
+                                      <span className={cam.is_recording ? 'text-rose-700 font-bold' : 'text-amber-700 font-semibold'}>
+                                        {cam.is_recording ? 'GRABANDO 24/7' : 'SIN GRABACIÓN'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* SECCIÓN 5: REGISTRO DE INCIDENTES RELEVANTES */}
+                <div className="space-y-3 page-break-avoid">
+                  <div className="flex items-center gap-2 border-b border-slate-300 pb-1">
+                    <span className="bg-slate-900 text-white w-5 h-5 rounded-full inline-flex items-center justify-center text-[10px] font-bold">5</span>
+                    <h2 className="text-xs font-black uppercase tracking-wider text-slate-900">
+                      Registro Cronológico de Incidentes y Eventos Relevantes
+                    </h2>
+                  </div>
+
+                  <div className="border border-slate-300 rounded overflow-hidden">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="bg-slate-100 text-slate-800 font-bold border-b border-slate-300 uppercase text-[9px]">
+                        <tr>
+                          <th className="p-2 border-r border-slate-200 w-36">Fecha y Hora</th>
+                          <th className="p-2 border-r border-slate-200 w-36">Categoría</th>
+                          <th className="p-2 border-r border-slate-200 text-center w-24">Severidad</th>
+                          <th className="p-2">Detalle Técnico / Acción Registrada</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200 text-[9.5px]">
+                        {incidents.slice(0, 5).map((inc) => (
+                          <tr key={inc.id} className="hover:bg-slate-50">
+                            <td className="p-2 border-r border-slate-200 font-mono text-slate-700">
                               {new Date(inc.timestamp).toLocaleString('es-PE')}
                             </td>
-                            <td className="px-4 py-2.5 font-bold text-zinc-200 print:text-black whitespace-nowrap">
+                            <td className="p-2 border-r border-slate-200 font-semibold text-slate-900">
                               {inc.event_type}
                             </td>
-                            <td className="px-4 py-2.5 whitespace-nowrap">
-                              <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase ${
-                                inc.severity === 'error' ? 'text-rose-400 bg-rose-500/10' : 'text-amber-400 bg-amber-500/10'
-                              } print:text-black`}>
-                                {inc.severity}
+                            <td className="p-2 border-r border-slate-200 text-center">
+                              <span className={`inline-block px-1.5 py-0.5 rounded text-[8.5px] font-bold uppercase border ${
+                                inc.severity === 'error'
+                                  ? 'bg-rose-50 text-rose-800 border-rose-300'
+                                  : 'bg-amber-50 text-amber-800 border-amber-300'
+                              }`}>
+                                {inc.severity === 'error' ? 'CRÍTICO' : 'ALERTA'}
                               </span>
                             </td>
-                            <td className="px-4 py-2.5 text-zinc-300 print:text-zinc-700">
+                            <td className="p-2 text-slate-700 text-[9px]">
                               {inc.description}
                             </td>
                           </tr>
@@ -304,23 +716,177 @@ const ExecutiveReportModal = ({ isOpen, onClose }) => {
                       </tbody>
                     </table>
                   </div>
-                )}
-              </div>
-
-              {/* Signature / Audit Footer */}
-              <div className="pt-8 border-t border-zinc-800 print:border-zinc-300 grid grid-cols-2 gap-8 text-center text-xs text-zinc-500 print:text-zinc-600">
-                <div className="space-y-6">
-                  <div className="border-b border-zinc-700 print:border-zinc-400 w-48 mx-auto" />
-                  <p>Firma Responsable de Seguridad / TI</p>
                 </div>
-                <div className="space-y-6">
-                  <div className="border-b border-zinc-700 print:border-zinc-400 w-48 mx-auto" />
-                  <p>V° B° Gerencia de Operaciones</p>
-                </div>
-              </div>
-            </>
-          )}
 
+                {/* SECCIÓN 6: HALLAZGOS Y PLAN DE ACCIÓN RECOMENDADO */}
+                <div className="space-y-2 page-break-avoid border border-slate-300 bg-slate-50/70 p-3.5 rounded-lg text-xs">
+                  <div className="flex items-center gap-2 border-b border-slate-200 pb-1">
+                    <span className="bg-slate-900 text-white w-5 h-5 rounded-full inline-flex items-center justify-center text-[10px] font-bold">6</span>
+                    <h3 className="font-black text-slate-900 uppercase text-[10.5px] tracking-wide">
+                      Hallazgos de Auditoría y Acciones Correctivas (Plan de Acción)
+                    </h3>
+                  </div>
+                  <ul className="list-disc list-inside space-y-1.5 text-[9.5px] text-slate-700 pt-1">
+                    <li>
+                      <strong>Integridad de Discos Duros (HDD):</strong> {kpis.hdd_healthy_devices} de {kpis.total_devices} grabadores poseen discos en formato normal. Se recomienda auditar periódicamente los sectores SMART para evitar pérdida de grabaciones forenses.
+                    </li>
+                    <li>
+                      <strong>Canales sin Modalidad de Grabación:</strong> Se constataron {kpis.not_recording_cameras} cámaras fuera de modalidad de grabación. Verificar asignación de canales y habilitar grabación continua (24/7) o por evento en el menú de cada DVR.
+                    </li>
+                    <li>
+                      <strong>Sincronización de Reloj NTP/Local:</strong> {kpis.drifted_devices_count > 0 ? `Se detectaron ${kpis.drifted_devices_count} grabadores con desfase horario > 5 min. Utilice el botón de sincronización de hora con el servidor local para calibrar los registros temporales.` : 'Los grabadores se encuentran sincronizados con la hora del servidor.'}
+                    </li>
+                  </ul>
+
+                  {/* Notas y Observaciones Técnicas Personalizadas */}
+                  {summary.notes && (
+                    <div className="mt-3 pt-2.5 border-t border-slate-300">
+                      <div className="flex items-center gap-1.5 font-bold text-slate-900 text-[10px] uppercase">
+                        <FileText size={13} className="text-blue-700" />
+                        <span>Notas Adicionales y Dictamen de Auditoría:</span>
+                      </div>
+                      <p className="text-[9.5px] text-slate-700 whitespace-pre-wrap mt-1 bg-white p-2 rounded border border-slate-200 leading-relaxed font-sans">
+                        {summary.notes}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* ==================================================================== */}
+                {/* 7. SECCIÓN DE FIRMAS DIGITALES Y CONFORMIDAD POR ROL                 */}
+                {/* ==================================================================== */}
+                <div className="report-signature-block page-break-avoid pt-6 border-t-2 border-slate-900 space-y-4">
+                  <div className="text-center">
+                    <h3 className="font-black text-slate-900 uppercase text-xs tracking-wider">
+                      Validación de Firmas Digitales y Conformidad Técnica
+                    </h3>
+                    <p className="text-[8.5px] text-slate-500 font-mono">
+                      Emisión con sello criptográfico SHA-256 e identificación de usuario por rol en el sistema centralizado
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 max-w-3xl mx-auto pt-2">
+                    {/* FIRMA 1: TÉCNICO DE SOPORTE (OPERADOR / AUDITOR CCTV) */}
+                    <div className="border border-slate-300 rounded-lg p-3 bg-slate-50/70 flex flex-col justify-between text-center space-y-2 relative">
+                      <div className="space-y-1">
+                        <span className="text-[8.5px] font-bold text-slate-500 uppercase tracking-wide">
+                          TÉCNICO DE SOPORTE / AUDITOR CCTV
+                        </span>
+                        <div className="font-bold text-slate-900 text-xs">
+                          {techSig.signed ? techSig.signed_by : (user && !isAdmin ? (user.full_name || user.username) : 'Técnico de Soporte TI')}
+                        </div>
+                        <div className="text-[8px] font-mono text-slate-500">
+                          {techSig.signed ? `@${techSig.username} (Operador)` : 'Área de Soporte Técnico'}
+                        </div>
+                      </div>
+
+                      {/* Estado o Sello Digital de Firma del Técnico */}
+                      {techSig.signed ? (
+                        <div className="border border-emerald-400 bg-emerald-50 text-emerald-950 p-2 rounded font-mono text-[8px] space-y-0.5 text-left">
+                          <div className="flex items-center gap-1 font-bold text-emerald-800 text-[8.5px]">
+                            <BadgeCheck size={13} className="text-emerald-600 shrink-0" />
+                            <span>✓ FIRMADO DIGITALMENTE</span>
+                          </div>
+                          <div><strong>Firmante:</strong> {techSig.signed_by}</div>
+                          <div><strong>Fecha/Hora:</strong> {new Date(techSig.signed_at).toLocaleString('es-PE')}</div>
+                          <div className="truncate text-slate-500 font-mono text-[7.5px]"><strong>Sello:</strong> {techSig.hash}</div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2 py-1">
+                          <div className="border-b border-slate-400 w-36 mx-auto" />
+                          <div className="text-[8px] text-amber-700 font-medium italic">
+                            [ Pendiente de Firma Digital ]
+                          </div>
+                          {/* Botón de Firma en Pantalla (Solo para Operadores/Técnicos) */}
+                          <div className="print:hidden no-print pt-1">
+                            {!isAdmin ? (
+                              <button
+                                type="button"
+                                onClick={() => signMutation.mutate('technician')}
+                                disabled={signMutation.isPending}
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded text-[10px] font-bold transition-all shadow-sm active:scale-95 cursor-pointer flex items-center gap-1.5 mx-auto"
+                              >
+                                <FileSignature size={12} />
+                                <span>{signingRole === 'technician' ? 'Registrando...' : 'Firmar como Técnico'}</span>
+                              </button>
+                            ) : (
+                              <span className="text-[8px] text-slate-400 italic">Requiere firma de un Técnico / Operador</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      <p className="text-[7.5px] text-slate-400 uppercase pt-1">
+                        Responsable de Monitoreo y Verificación Técnica
+                      </p>
+                    </div>
+
+                    {/* FIRMA 2: COORDINADOR DEL ÁREA DE TI (ADMIN / V° B°) */}
+                    <div className="border border-slate-300 rounded-lg p-3 bg-slate-50/70 flex flex-col justify-between text-center space-y-2 relative">
+                      <div className="space-y-1">
+                        <span className="text-[8.5px] font-bold text-slate-500 uppercase tracking-wide">
+                          COORDINADOR DEL ÁREA DE TI
+                        </span>
+                        <div className="font-bold text-slate-900 text-xs">
+                          {coordSig.signed ? coordSig.signed_by : (user && isAdmin ? (user.full_name || user.username) : 'Coordinador del Área de TI')}
+                        </div>
+                        <div className="text-[8px] font-mono text-slate-500">
+                          {coordSig.signed ? `@${coordSig.username} (Coordinación)` : 'Jefatura / Coordinación TI'}
+                        </div>
+                      </div>
+
+                      {/* Estado o Sello Digital de Firma del Coordinador */}
+                      {coordSig.signed ? (
+                        <div className="border border-blue-400 bg-blue-50 text-blue-950 p-2 rounded font-mono text-[8px] space-y-0.5 text-left">
+                          <div className="flex items-center gap-1 font-bold text-blue-800 text-[8.5px]">
+                            <CheckCheck size={13} className="text-blue-600 shrink-0" />
+                            <span>✓ V° B° CONFORMIDAD REGISTRADA</span>
+                          </div>
+                          <div><strong>Coordinador:</strong> {coordSig.signed_by}</div>
+                          <div><strong>Fecha/Hora:</strong> {new Date(coordSig.signed_at).toLocaleString('es-PE')}</div>
+                          <div className="truncate text-slate-500 font-mono text-[7.5px]"><strong>Sello:</strong> {coordSig.hash}</div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2 py-1">
+                          <div className="border-b border-slate-400 w-36 mx-auto" />
+                          <div className="text-[8px] text-amber-700 font-medium italic">
+                            [ Pendiente de V° B° por Coordinación TI ]
+                          </div>
+                          {/* Botón de Firma en Pantalla */}
+                          <div className="print:hidden no-print pt-1">
+                            {isAdmin ? (
+                              <button
+                                type="button"
+                                onClick={() => signMutation.mutate('coordinator')}
+                                disabled={signMutation.isPending}
+                                className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-[10px] font-bold transition-all shadow-sm active:scale-95 cursor-pointer flex items-center gap-1.5 mx-auto"
+                              >
+                                <CheckCheck size={12} />
+                                <span>{signingRole === 'coordinator' ? 'Registrando...' : 'Dar V° B° Coordinador'}</span>
+                              </button>
+                            ) : (
+                              <span className="text-[8px] text-slate-400 italic">Requiere inicio de sesión de Coordinador</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      <p className="text-[7.5px] text-slate-400 uppercase pt-1">
+                        Aprobación Final y Veredicto de Infraestructura
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Pie de página institucional con correlativo único */}
+                <div className="text-[8px] text-slate-400 text-center border-t border-slate-200 pt-2 font-mono flex justify-between">
+                  <span>SISTEMA CENTRALIZADO CCTV &bull; DOCUMENTO CONFIDENCIAL</span>
+                  <span>REGISTRO FORENSE N° {summary.report_code || 'INF-CCTV-20260817-0001'} &bull; ANEXO FOTOGRÁFICO INCLUIDO</span>
+                </div>
+
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 from sqlmodel import SQLModel
 from app.models.models import UserRole
 
@@ -10,6 +10,7 @@ class UserBase(SQLModel):
 
 class UserCreate(UserBase):
     password: str
+    camera_ids: Optional[List[int]] = []
 
 class UserUpdate(SQLModel):
     username: Optional[str] = None
@@ -17,7 +18,9 @@ class UserUpdate(SQLModel):
     password: Optional[str] = None
     role: Optional[UserRole] = None
     is_active: Optional[bool] = None
+    camera_ids: Optional[List[int]] = None
 
 class UserRead(UserBase):
     id: int
+    camera_ids: List[int] = []
 

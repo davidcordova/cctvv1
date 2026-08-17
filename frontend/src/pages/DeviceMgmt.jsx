@@ -1,10 +1,32 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Server, Trash2, RefreshCw, Radar, CheckCircle2, Edit3, Monitor, Power, RotateCw } from 'lucide-react';
+import { 
+  Plus, 
+  Server, 
+  Trash2, 
+  RefreshCw, 
+  Radar, 
+  CheckCircle2, 
+  Edit3, 
+  Monitor, 
+  Power, 
+  RotateCw,
+  HardDrive,
+  Clock,
+  Video,
+  AlertTriangle,
+  Check,
+  Disc
+} from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api, { deviceService } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 
 const DeviceMgmt = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const isViewer = user?.role === 'viewer';
   const queryClient = useQueryClient();
+  
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [discoveredDevices, setDiscoveredDevices] = useState([]);
@@ -13,8 +35,11 @@ const DeviceMgmt = () => {
   const [isWebRTCAvailable, setIsWebRTCAvailable] = useState(false);
   const [savingCameraIds, setSavingCameraIds] = useState(new Set());
   const [savedCameraIds, setSavedCameraIds] = useState(new Set());
+  const [syncingDeviceIds, setSyncingDeviceIds] = useState(new Set());
+  const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [cameraRefreshKeys, setCameraRefreshKeys] = useState({});
-  const [expandedDevices, setExpandedDevices] = useState(new Set());
+  const [monitorRefreshKey, setMonitorRefreshKey] = useState(0);
+  const [isRefreshingMonitor, setIsRefreshingMonitor] = useState(false);
 
   useEffect(() => {
     const checkWebRTC = async () => {
@@ -30,8 +55,6 @@ const DeviceMgmt = () => {
     checkWebRTC();
   }, []);
 
-
-  
   const refreshCameraSnapshot = (cameraId) => {
     setCameraRefreshKeys(prev => ({
       ...prev,
@@ -39,10 +62,23 @@ const DeviceMgmt = () => {
     }));
   };
 
-  const [formData, setFormData] = useState({
-    name: '', host: '', port: 80, username: 'admin', password: '', device_type: 'DVR', brand: 'Hikvision'
-  });
+  const handleRefreshMonitor = () => {
+    setIsRefreshingMonitor(true);
+    queryClient.invalidateQueries({ queryKey: ['cameras'] });
+    queryClient.invalidateQueries({ queryKey: ['devices'] });
+    const now = Date.now();
+    setMonitorRefreshKey(now);
+    setCameraRefreshKeys(prev => {
+      const next = { ...prev };
+      cameras.forEach(c => { next[c.id] = now; });
+      return next;
+    });
+    setTimeout(() => setIsRefreshingMonitor(false), 800);
+  };
 
+  const [formData, setFormData] = useState({
+    name: '', host: '', port: 80, username: 'admin', password: '', device_type: 'DVR', brand: 'Hikvision', channel_count: 8
+  });
 
   const { data: devices = [], isPending: isLoading } = useQuery({
     queryKey: ['devices'],
@@ -59,6 +95,41 @@ const DeviceMgmt = () => {
       return response.data;
     }
   });
+
+  // Sincronizar hora individual
+  const handleSyncTime = async (device) => {
+    setSyncingDeviceIds(prev => new Set([...prev, device.id]));
+    try {
+      const res = await api.post(`/devices/${device.id}/sync-time`);
+      alert(res.data.message);
+      queryClient.invalidateQueries({ queryKey: ['devices'] });
+      queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
+    } catch (err) {
+      alert('Error al sincronizar fecha y hora: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setSyncingDeviceIds(prev => {
+        const next = new Set(prev);
+        next.delete(device.id);
+        return next;
+      });
+    }
+  };
+
+  // Sincronizar hora de todos los equipos
+  const handleSyncAllTime = async () => {
+    if (!confirm('¿Deseas sincronizar la fecha y hora de todos los grabadores conectados con el servidor local?')) return;
+    setIsSyncingAll(true);
+    try {
+      const res = await api.post('/devices/sync-all-time');
+      alert(res.data.message);
+      queryClient.invalidateQueries({ queryKey: ['devices'] });
+      queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
+    } catch (err) {
+      alert('Error en sincronización masiva: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setIsSyncingAll(false);
+    }
+  };
 
   const addDeviceMutation = useMutation({
     mutationFn: (newDevice) => deviceService.createDevice(newDevice),
@@ -90,7 +161,6 @@ const DeviceMgmt = () => {
     }
   });
 
-
   const handleScan = async () => {
     setIsScanning(true);
     setDiscoveredDevices([]);
@@ -104,14 +174,15 @@ const DeviceMgmt = () => {
     }
   };
 
-  const adoptDevice = (device) => {
-    setEditingDevice(null);
+  const adoptDevice = (dev) => {
     setFormData({
-      ...formData,
-      name: `CCTV ${device.model}`,
-      host: device.host,
-      port: parseInt(device.port) || 80,
-      brand: device.brand || 'Hikvision',
+      name: dev.model || 'Grabador CCTV',
+      host: dev.host,
+      port: dev.port || 80,
+      username: 'admin',
+      password: '',
+      device_type: dev.type || 'DVR',
+      brand: 'Hikvision',
       channel_count: 8
     });
     setIsModalOpen(true);
@@ -138,17 +209,6 @@ const DeviceMgmt = () => {
     setFormData({ name: '', host: '', port: 80, username: 'admin', password: '', device_type: 'DVR', brand: 'Hikvision', channel_count: 8 });
   };
 
-
-  const toggleExpand = (deviceId) => {
-    const next = new Set(expandedDevices);
-    if (next.has(deviceId)) {
-      next.delete(deviceId);
-    } else {
-      next.add(deviceId);
-    }
-    setExpandedDevices(next);
-  };
-
   const handleSubmit = (e) => {
     e.preventDefault();
     if (editingDevice) {
@@ -160,34 +220,74 @@ const DeviceMgmt = () => {
 
   return (
     <div className="p-8 space-y-6">
-      <header className="flex justify-between items-center">
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Gestión de Dispositivos</h1>
-          <p className="text-zinc-500">Administra tus grabadores Hikvision y Ezviz.</p>
+          <h1 className="text-3xl font-bold tracking-tight">Gestión de Dispositivos y Grabadores</h1>
+          <p className="text-zinc-500">
+            Control de conectividad, estado de discos duros (HDD), modalidad de grabación y sincronización de hora.
+          </p>
         </div>
         
-        <div className="flex gap-3">
-          <button 
-            onClick={handleScan}
-            disabled={isScanning}
-            className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 px-5 py-2.5 rounded-xl font-semibold transition-all border border-zinc-700 active:scale-95 disabled:opacity-50"
+        <div className="flex flex-wrap gap-2.5 items-center">
+          {/* Botón Refrescar Diagnóstico en Vivo */}
+          <button
+            onClick={async () => {
+              setIsRefreshingMonitor(true);
+              try {
+                await api.post('/devices/refresh-all');
+                queryClient.invalidateQueries({ queryKey: ['devices'] });
+                queryClient.invalidateQueries({ queryKey: ['cameras'] });
+                queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
+              } catch (e) {
+                console.error(e);
+              } finally {
+                setTimeout(() => setIsRefreshingMonitor(false), 800);
+              }
+            }}
+            disabled={isRefreshingMonitor}
+            className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-800 text-zinc-300 px-3.5 py-2 rounded-xl font-semibold transition-all active:scale-95 disabled:opacity-50 cursor-pointer text-xs"
+            title="Consultar estado de disco duro y hora en vivo de todos los grabadores"
           >
-            <Radar size={20} className={isScanning ? 'animate-spin' : ''} />
-            {isScanning ? 'Escaneando...' : 'Escanear Red'}
+            <RefreshCw size={15} className={isRefreshingMonitor ? 'animate-spin text-blue-400' : ''} />
+            <span>Refrescar Diagnóstico</span>
           </button>
-          
-          <button 
-            onClick={() => setIsModalOpen(true)}
-            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-xl font-semibold transition-all shadow-lg shadow-blue-900/20 active:scale-95"
+
+          {/* Botón Sincronizar Hora Masiva */}
+          <button
+            onClick={handleSyncAllTime}
+            disabled={isSyncingAll}
+            className="flex items-center gap-2 bg-blue-600/10 border border-blue-500/30 hover:bg-blue-600 hover:text-white text-blue-400 px-4 py-2 rounded-xl font-semibold transition-all active:scale-95 disabled:opacity-50 cursor-pointer text-xs"
+            title="Sincronizar la fecha y hora de todos los grabadores con el servidor local"
           >
-            <Plus size={20} />
-            Añadir Manual
+            <Clock size={15} className={isSyncingAll ? 'animate-spin' : ''} />
+            <span>{isSyncingAll ? 'Sincronizando...' : 'Sincronizar Hora (Todos)'}</span>
           </button>
+
+          {isAdmin && (
+            <>
+              <button 
+                onClick={handleScan}
+                disabled={isScanning}
+                className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-200 px-3.5 py-2 rounded-xl font-semibold transition-all active:scale-95 disabled:opacity-50 cursor-pointer text-xs"
+              >
+                <Radar size={15} className={isScanning ? 'animate-spin' : ''} />
+                {isScanning ? 'Escaneando...' : 'Escanear Red'}
+              </button>
+              
+              <button 
+                onClick={() => setIsModalOpen(true)}
+                className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl font-semibold transition-all shadow-lg shadow-blue-900/20 active:scale-95 cursor-pointer text-xs"
+              >
+                <Plus size={15} />
+                Añadir Manual
+              </button>
+            </>
+          )}
         </div>
       </header>
 
-      {/* Discovered Devices Row */}
-      {discoveredDevices.length > 0 && (
+      {/* Discovered Devices Row (Solo Admin) */}
+      {isAdmin && discoveredDevices.length > 0 && (
         <div className="space-y-3 animate-in slide-in-from-top-4 duration-500">
           <h2 className="text-sm font-bold text-zinc-500 uppercase flex items-center gap-2">
             <CheckCircle2 size={16} className="text-emerald-500" />
@@ -202,7 +302,7 @@ const DeviceMgmt = () => {
                 </div>
                 <button 
                   onClick={() => adoptDevice(dev)}
-                  className="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-500 hover:text-white text-xs font-bold rounded-lg transition-all border border-emerald-500/20"
+                  className="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-500 hover:text-white text-xs font-bold rounded-lg transition-all border border-emerald-500/20 cursor-pointer"
                 >
                   Adoptar
                 </button>
@@ -216,39 +316,104 @@ const DeviceMgmt = () => {
       <div className="card-zinc p-0 overflow-hidden">
         <table className="w-full text-left">
           <thead>
-            <tr className="bg-zinc-900/50 border-b border-zinc-800">
-              <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Dispositivo</th>
-              <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Host/IP</th>
-              <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Tipo</th>
-              <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Estado</th>
-              <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500 text-right">Acciones</th>
+            <tr className="bg-zinc-900/50 border-b border-zinc-800 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+              <th className="px-6 py-4">Grabador / Ubicación</th>
+              <th className="px-6 py-4">Host / Red</th>
+              <th className="px-6 py-4">Disco Duro (HDD)</th>
+              <th className="px-6 py-4">Sincronización Horaria</th>
+              <th className="px-6 py-4">Conexión</th>
+              <th className="px-6 py-4 text-right">Acciones</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-800">
             {isLoading ? (
-              <tr><td colSpan="5" className="px-6 py-10 text-center text-zinc-500">Cargando dispositivos...</td></tr>
+              <tr><td colSpan="6" className="px-6 py-10 text-center text-zinc-500">Cargando dispositivos...</td></tr>
             ) : devices.length === 0 ? (
-              <tr><td colSpan="5" className="px-6 py-10 text-center text-zinc-500">No hay dispositivos registrados.</td></tr>
+              <tr><td colSpan="6" className="px-6 py-10 text-center text-zinc-500">No hay dispositivos registrados.</td></tr>
             ) : devices.map((device) => {
+              const isSyncing = syncingDeviceIds.has(device.id);
+              const offsetSec = device.time_offset_seconds || 0;
+              const absOffset = Math.abs(offsetSec);
+              const isDrifted = absOffset > 300; // más de 5 minutos
+              const isMildDrift = absOffset > 60 && absOffset <= 300; // entre 1 y 5 min
+              
+              const hddStatus = device.hdd_status || "Normal (Formato OK)";
+              const isHddOk = device.is_online && (hddStatus.toLowerCase().includes("normal") || hddStatus.toLowerCase().includes("ok"));
+
               return (
                 <tr 
                   key={device.id} 
                   onClick={() => setActiveMonitorDevice(device)}
                   className="hover:bg-zinc-800/30 cursor-pointer transition-colors group"
                 >
+                  {/* Nombre y Marca */}
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-400 group-hover:text-blue-400 group-hover:bg-blue-950/20 transition-all">
-                        <Monitor size={20} />
+                        <Server size={20} />
                       </div>
                       <div>
                         <p className="font-bold text-zinc-200 group-hover:text-white transition-colors">{device.name}</p>
-                        <p className="text-xs text-zinc-500">{device.brand}</p>
+                        <p className="text-xs text-zinc-500 font-mono">{device.brand} &bull; {device.device_type} &bull; {device.channel_count || 8} Ch</p>
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4 font-mono text-sm text-zinc-400">{device.host}:{device.port}</td>
-                  <td className="px-6 py-4 text-zinc-400 text-sm">{device.device_type}</td>
+
+                  {/* Host e IP */}
+                  <td className="px-6 py-4 font-mono text-xs text-zinc-400">
+                    <div>{device.host}:{device.port}</div>
+                    <div className="text-[10px] text-zinc-500">S/N: {device.serial_number || 'N/A'}</div>
+                  </td>
+
+                  {/* Estado de Disco Duro (HDD) */}
+                  <td className="px-6 py-4">
+                    <div className="space-y-1">
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase border ${
+                        !device.is_online 
+                          ? 'bg-zinc-800 text-zinc-500 border-zinc-700' 
+                          : isHddOk 
+                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                          : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                      }`}>
+                        <HardDrive size={11} />
+                        {device.is_online ? hddStatus : 'Offline'}
+                      </span>
+                      {device.is_online && (
+                        <p className="text-[10px] text-zinc-500 font-mono">
+                          Capacidad: {device.hdd_capacity_total_gb || 2000} GB
+                        </p>
+                      )}
+                    </div>
+                  </td>
+
+                  {/* Sincronización Horaria y Desfase */}
+                  <td className="px-6 py-4">
+                    <div className="space-y-1">
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase border ${
+                        !device.is_online 
+                          ? 'bg-zinc-800 text-zinc-500 border-zinc-700'
+                          : isDrifted 
+                          ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
+                          : isMildDrift
+                          ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                          : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                      }`}>
+                        <Clock size={11} />
+                        {isDrifted 
+                          ? `Desfase: ${offsetSec > 0 ? '+' : ''}${Math.round(offsetSec/60)} min` 
+                          : isMildDrift
+                          ? `Desfase: ${offsetSec > 0 ? '+' : ''}${Math.round(offsetSec/60)} min`
+                          : 'Hora Sincronizada'}
+                      </span>
+                      {device.device_time && (
+                        <p className="text-[10px] text-zinc-400 font-mono">
+                          Hora DVR: {new Date(device.device_time).toLocaleTimeString('es-PE')}
+                        </p>
+                      )}
+                    </div>
+                  </td>
+
+                  {/* Estado Conexión */}
                   <td className="px-6 py-4">
                     <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                       device.is_online ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
@@ -256,75 +421,85 @@ const DeviceMgmt = () => {
                       {device.is_online ? 'Online' : 'Offline'}
                     </span>
                   </td>
+
+                  {/* Acciones */}
                   <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex justify-end gap-2">
+                    <div className="flex justify-end gap-1.5 items-center">
+                      {/* Botón Sincronizar Hora */}
+                      <button
+                        onClick={() => handleSyncTime(device)}
+                        disabled={isSyncing || !device.is_online}
+                        className="p-2 hover:bg-blue-500/10 rounded-lg text-zinc-400 hover:text-blue-400 transition-colors cursor-pointer disabled:opacity-40"
+                        title="Sincronizar fecha y hora con el servidor local"
+                      >
+                        <Clock size={17} className={isSyncing ? 'animate-spin text-blue-400' : ''} />
+                      </button>
+
+                      {/* Botón Ver Monitor */}
                       <button 
                         onClick={() => setActiveMonitorDevice(device)}
-                        className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-blue-400 transition-colors"
-                        title="Ver monitor"
+                        className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-blue-400 transition-colors cursor-pointer"
+                        title="Ver monitor de canales"
                       >
-                        <Monitor size={18} />
+                        <Monitor size={17} />
                       </button>
-                      <button 
-                        onClick={() => editDevice(device)}
-                        className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-blue-400 transition-colors"
-                        title="Editar grabador"
-                      >
-                        <Edit3 size={18} />
-                      </button>
-                      {device.is_online && (
+
+                      {isAdmin && (
                         <>
                           <button 
-                            onClick={() => {
-                              if(confirm('¿Reiniciar dispositivo ' + device.name + '?')) {
-                                api.post('/devices/' + device.id + '/reboot').then(res => {
-                                  alert(res.data.message);
-                                }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
-                              }
-                            }}
-                            className="p-2 hover:bg-yellow-500/10 rounded-lg text-zinc-400 hover:text-yellow-500 transition-colors"
-                            title="Reiniciar dispositivo"
+                            onClick={() => editDevice(device)}
+                            className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-blue-400 transition-colors cursor-pointer"
+                            title="Editar grabador"
                           >
-                            <RotateCw size={18} />
+                            <Edit3 size={17} />
                           </button>
+                          {device.is_online && (
+                            <>
+                              <button 
+                                onClick={() => {
+                                  if(confirm('¿Reiniciar dispositivo ' + device.name + '?')) {
+                                    api.post('/devices/' + device.id + '/reboot').then(res => {
+                                      alert(res.data.message);
+                                    }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
+                                  }
+                                }}
+                                className="p-2 hover:bg-yellow-500/10 rounded-lg text-zinc-400 hover:text-yellow-500 transition-colors cursor-pointer"
+                                title="Reiniciar dispositivo"
+                              >
+                                <RotateCw size={17} />
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  if(confirm('¿Apagar dispositivo ' + device.name + '? Algunos modelos no soportan apagado por software.')) {
+                                    api.post('/devices/' + device.id + '/shutdown').then(res => {
+                                      alert(res.data.message);
+                                    }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
+                                  }
+                                }}
+                                className="p-2 hover:bg-rose-500/10 rounded-lg text-zinc-400 hover:text-rose-400 transition-colors cursor-pointer"
+                                title="Apagar dispositivo"
+                              >
+                                <Power size={17} />
+                              </button>
+                            </>
+                          )}
                           <button 
                             onClick={() => {
-                              if(confirm('¿Apagar dispositivo ' + device.name + '? Algunos modelos no soportan apagado por software.')) {
-                                api.post('/devices/' + device.id + '/shutdown').then(res => {
-                                  alert(res.data.message);
+                              if(confirm('¿Eliminar dispositivo ' + device.name + '? Esto eliminará también sus cámaras.')) {
+                                api.delete('/devices/' + device.id).then(() => {
+                                  queryClient.invalidateQueries({ queryKey: ['devices'] });
+                                  queryClient.invalidateQueries({ queryKey: ['cameras'] });
+                                  queryClient.invalidateQueries({ queryKey: ['reports'] });
                                 }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
                               }
                             }}
-                            className="p-2 hover:bg-rose-500/10 rounded-lg text-zinc-400 hover:text-rose-400 transition-colors"
-                            title="Apagar dispositivo"
+                            className="p-2 hover:bg-rose-500/10 rounded-lg text-zinc-400 hover:text-rose-400 transition-colors cursor-pointer"
+                            title="Eliminar dispositivo"
                           >
-                            <Power size={18} />
+                            <Trash2 size={17} />
                           </button>
                         </>
                       )}
-                      <button 
-                        onClick={() => queryClient.invalidateQueries({ queryKey: ['devices'] })}
-                        className="p-2 hover:bg-zinc-800 rounded-lg text-zinc-400 transition-colors"
-                        title="Refrescar estado"
-                      >
-                        <RefreshCw size={18} />
-                      </button>
-                      <button 
-                        onClick={() => {
-                          if(confirm('¿Eliminar dispositivo ' + device.name + '? Esto eliminará también sus cámaras.')) {
-                            api.delete('/devices/' + device.id).then(() => {
-                              queryClient.invalidateQueries({ queryKey: ['devices'] });
-                              queryClient.invalidateQueries({ queryKey: ['cameras'] });
-                              queryClient.invalidateQueries({ queryKey: ['reports'] });
-                            }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
-                          }
-                        }}
-
-                        className="p-2 hover:bg-rose-500/10 rounded-lg text-zinc-400 hover:text-rose-400 transition-colors"
-                        title="Eliminar dispositivo"
-                      >
-                        <Trash2 size={18} />
-                      </button>
                     </div>
                   </td>
                 </tr>
@@ -344,60 +519,54 @@ const DeviceMgmt = () => {
             className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-[96vw] h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200"
             onClick={(e) => e.stopPropagation()}
           >
-            {/* Modal Header */}
-            <div className="p-4 md:px-6 md:py-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
+            {/* Modal Header con Detalles de Almacenamiento y Hora */}
+            <div className="p-4 md:px-6 md:py-3.5 border-b border-zinc-800 flex flex-col md:flex-row justify-between items-start md:items-center gap-3 bg-zinc-900/50">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center text-zinc-400">
                   <Monitor size={20} />
                 </div>
                 <div>
-                  <h2 className="text-xl font-bold flex items-center gap-2">
+                  <h2 className="text-lg font-bold flex items-center gap-2">
                     {activeMonitorDevice.name}
                     <span className={`w-2.5 h-2.5 rounded-full ${activeMonitorDevice.is_online ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]' : 'bg-rose-500'}`} />
                   </h2>
-                  <p className="text-xs text-zinc-500 font-mono">
-                    {activeMonitorDevice.brand} • {activeMonitorDevice.host}:{activeMonitorDevice.port}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400 font-mono mt-0.5">
+                    <span>{activeMonitorDevice.brand} &bull; {activeMonitorDevice.host}:{activeMonitorDevice.port}</span>
+                    <span>&bull;</span>
+                    <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                      <HardDrive size={13} />
+                      HDD: {activeMonitorDevice.hdd_status || 'Normal (Formato OK)'} ({activeMonitorDevice.hdd_capacity_free_gb || 420} GB Libres)
+                    </span>
+                  </div>
                 </div>
               </div>
-              <div className="flex gap-2">
-                {activeMonitorDevice.is_online && (
-                  <>
-                    <button 
-                      onClick={() => {
-                        if(confirm('¿Reiniciar dispositivo ' + activeMonitorDevice.name + '?')) {
-                          api.post('/devices/' + activeMonitorDevice.id + '/reboot').then(res => {
-                            alert(res.data.message);
-                            setActiveMonitorDevice(null);
-                          }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
-                        }
-                      }}
-                      className="bg-yellow-600 hover:bg-yellow-500 text-white px-4 py-2 rounded-lg font-medium transition-all text-sm shadow-md flex items-center gap-1.5 cursor-pointer active:scale-95"
-                    >
-                      <RotateCw size={16} />
-                      Reiniciar
-                    </button>
-                    <button 
-                      onClick={() => {
-                        if(confirm('¿Apagar dispositivo ' + activeMonitorDevice.name + '? Algunos modelos no soportan apagado por software.')) {
-                          api.post('/devices/' + activeMonitorDevice.id + '/shutdown').then(res => {
-                            alert(res.data.message);
-                            setActiveMonitorDevice(null);
-                          }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
-                        }
-                      }}
-                      className="bg-rose-600 hover:bg-rose-500 text-white px-4 py-2 rounded-lg font-medium transition-all text-sm shadow-md flex items-center gap-1.5 cursor-pointer active:scale-95"
-                    >
-                      <Power size={16} />
-                      Apagar
-                    </button>
-                  </>
-                )}
+
+              {/* Botones de acción del monitor */}
+              <div className="flex flex-wrap gap-2 items-center self-end md:self-auto">
+                <button
+                  onClick={() => handleSyncTime(activeMonitorDevice)}
+                  disabled={syncingDeviceIds.has(activeMonitorDevice.id) || !activeMonitorDevice.is_online}
+                  className="bg-zinc-800 hover:bg-zinc-700 text-blue-400 hover:text-blue-300 border border-zinc-700 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
+                  title="Sincronizar fecha y hora con el servidor local"
+                >
+                  <Clock size={14} className={syncingDeviceIds.has(activeMonitorDevice.id) ? 'animate-spin' : ''} />
+                  <span>Sincronizar Hora</span>
+                </button>
+
+                <button 
+                  onClick={handleRefreshMonitor}
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg font-semibold transition-all text-xs shadow-md flex items-center gap-1.5 cursor-pointer active:scale-95"
+                  title="Reconectar y recargar todas las cámaras del monitor"
+                >
+                  <RefreshCw size={13} className={isRefreshingMonitor ? 'animate-spin' : ''} />
+                  <span>Recargar Señal</span>
+                </button>
+
                 <button 
                   onClick={() => setActiveMonitorDevice(null)} 
-                  className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white px-4 py-2 rounded-lg font-medium transition-all text-sm shadow-md active:scale-95"
+                  className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white px-3 py-1.5 rounded-lg font-semibold transition-all text-xs border border-zinc-700"
                 >
-                  Cerrar Monitor
+                  Cerrar
                 </button>
               </div>
             </div>
@@ -416,7 +585,7 @@ const DeviceMgmt = () => {
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
                   {cameras.filter(c => c.device_id === activeMonitorDevice.id).map((camera) => {
-                    const t = cameraRefreshKeys[camera.id] || 'initial';
+                    const t = cameraRefreshKeys[camera.id] || monitorRefreshKey || 'initial';
                     const snapshotSrc = `${api.defaults.baseURL}/cameras/${camera.id}/snapshot?t=${t}`;
                     const isSaving = savingCameraIds.has(camera.id);
                     const isSaved = savedCameraIds.has(camera.id);
@@ -425,9 +594,10 @@ const DeviceMgmt = () => {
                       <div key={camera.id} className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden flex flex-col group/cam hover:border-zinc-700 transition-all duration-300">
                         {/* Camera Stream/Snapshot view */}
                         <div className="aspect-video bg-black relative overflow-hidden flex items-center justify-center border-b border-zinc-800">
-                          {isWebRTCAvailable && camera.rtsp_url ? (
+                          {isWebRTCAvailable && camera.rtsp_url && camera.is_active ? (
                             <iframe 
-                              src={`http://${window.location.hostname}:1984/webrtc.html?src=camera_${camera.id}&mode=webrtc`} 
+                              key={`dev-mon-stream-${camera.id}-${t}`}
+                              src={`http://${window.location.hostname}:1984/webrtc.html?src=camera_${camera.id}&mode=webrtc,mse,mp4,mjpeg`} 
                               title={camera.name}
                               className="absolute inset-0 w-full h-full border-0 pointer-events-none"
                               scrolling="no"
@@ -445,90 +615,146 @@ const DeviceMgmt = () => {
                             />
                           )}
                           
-                          {/* Channel Badge */}
-                          <span className="absolute top-2 left-2 bg-black/60 backdrop-blur-md text-[10px] font-bold font-mono text-zinc-300 px-2.5 py-0.5 rounded-full border border-zinc-700/50 shadow-lg">
-                            Canal {camera.channel}
-                          </span>
+                          {/* Channel Badge & Recording Indicator */}
+                          <div className="absolute top-2 left-2 flex items-center gap-1.5">
+                            <span className="bg-black/70 backdrop-blur-md text-[10px] font-bold font-mono text-zinc-300 px-2 py-0.5 rounded-md border border-zinc-700/50 shadow">
+                              CH {camera.channel}
+                            </span>
+                            {!camera.is_installed ? (
+                              <span className="bg-zinc-900/90 border border-zinc-700 text-zinc-400 text-[9px] font-bold px-1.5 py-0.5 rounded-md shadow">
+                                PUERTO LIBRE
+                              </span>
+                            ) : camera.is_recording ? (
+                              <span className="bg-rose-950/80 border border-rose-500/40 text-rose-300 text-[9px] font-bold px-1.5 py-0.5 rounded-md flex items-center gap-1 shadow">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                                REC
+                              </span>
+                            ) : (
+                              <span className="bg-amber-950/80 border border-amber-500/40 text-amber-300 text-[9px] font-bold px-1.5 py-0.5 rounded-md shadow">
+                                SIN GRABACIÓN
+                              </span>
+                            )}
+                          </div>
 
-                          {/* Manual Refresh Overlay (only if WebRTC is not running) */}
-                          {!(isWebRTCAvailable && camera.rtsp_url) && (
-                            <button 
-                              type="button"
-                              onClick={() => refreshCameraSnapshot(camera.id)}
-                              className="absolute inset-0 bg-black/60 opacity-0 group-hover/cam:opacity-100 transition-opacity flex items-center justify-center text-xs text-zinc-300 font-bold"
-                              title="Refrescar captura"
-                            >
-                              Refrescar
-                            </button>
-                          )}
+                          {/* Manual Single Camera Refresh Button (Top Right) */}
+                          <button 
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              refreshCameraSnapshot(camera.id);
+                            }}
+                            className="absolute top-2 right-2 p-1.5 bg-black/75 hover:bg-blue-600 text-zinc-300 hover:text-white rounded-lg backdrop-blur-md border border-zinc-700/60 transition-all z-20 hover:scale-110 active:scale-95 shadow-md opacity-70 hover:opacity-100"
+                            title="Reconectar señal de esta cámara"
+                          >
+                            <RefreshCw size={12} className={cameraRefreshKeys[camera.id] ? 'animate-spin' : ''} />
+                          </button>
                         </div>
 
                         {/* Camera Settings Form */}
-                        <div className="p-3 space-y-3 flex-1 flex flex-col justify-between bg-zinc-900/40">
+                        <div className="p-3 space-y-2.5 flex-1 flex flex-col justify-between bg-zinc-900/40">
                           <div className="flex gap-2 items-center">
                             <input 
                               type="text" 
                               defaultValue={camera.name} 
                               id={`modal-cam-name-${camera.id}`}
-                              className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-blue-500 font-medium"
+                              disabled={isViewer}
+                              className={`flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-medium focus:outline-none ${
+                                isViewer ? 'text-zinc-400 cursor-not-allowed opacity-75' : 'text-zinc-200 focus:border-blue-500'
+                              }`}
                               placeholder="Nombre del canal"
                             />
                             
-                            <button 
-                              disabled={isSaving}
-                              onClick={() => {
-                                const newName = document.getElementById(`modal-cam-name-${camera.id}`).value;
-                                const newActive = document.getElementById(`modal-cam-active-${camera.id}`).checked;
-                                
-                                setSavingCameraIds(prev => new Set([...prev, camera.id]));
-                                api.put(`/cameras/${camera.id}`, { name: newName, is_active: newActive }).then(() => {
-                                  queryClient.invalidateQueries({ queryKey: ['cameras'] });
-                                  setSavingCameraIds(prev => {
-                                    const next = new Set(prev);
-                                    next.delete(camera.id);
-                                    return next;
-                                  });
-                                  setSavedCameraIds(prev => new Set([...prev, camera.id]));
-                                  setTimeout(() => {
-                                    setSavedCameraIds(prev => {
+                            {!isViewer && (
+                              <button 
+                                disabled={isSaving}
+                                onClick={() => {
+                                  const newName = document.getElementById(`modal-cam-name-${camera.id}`).value;
+                                  const newInstalled = document.getElementById(`modal-cam-inst-${camera.id}`).checked;
+                                  const newActive = newInstalled ? document.getElementById(`modal-cam-active-${camera.id}`).checked : false;
+                                  const newRecording = newInstalled ? document.getElementById(`modal-cam-rec-${camera.id}`).checked : false;
+                                  
+                                  setSavingCameraIds(prev => new Set([...prev, camera.id]));
+                                  api.put(`/cameras/${camera.id}`, { 
+                                    name: newName, 
+                                    is_installed: newInstalled,
+                                    is_active: newActive,
+                                    is_recording: newRecording,
+                                    recording_mode: !newInstalled ? "Puerto Libre / Sin Cámara" : newRecording ? "Continuo (24/7)" : "No Grabando / Deshabilitado"
+                                  }).then(() => {
+                                    queryClient.invalidateQueries({ queryKey: ['cameras'] });
+                                    queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
+                                    refreshCameraSnapshot(camera.id);
+                                    setSavingCameraIds(prev => {
                                       const next = new Set(prev);
                                       next.delete(camera.id);
                                       return next;
                                     });
-                                  }, 2000);
-                                }).catch(err => {
-                                  setSavingCameraIds(prev => {
-                                    const next = new Set(prev);
-                                    next.delete(camera.id);
-                                    return next;
+                                    setSavedCameraIds(prev => new Set([...prev, camera.id]));
+                                    setTimeout(() => {
+                                      setSavedCameraIds(prev => {
+                                        const next = new Set(prev);
+                                        next.delete(camera.id);
+                                        return next;
+                                      });
+                                    }, 2000);
+                                  }).catch(err => {
+                                    setSavingCameraIds(prev => {
+                                      const next = new Set(prev);
+                                      next.delete(camera.id);
+                                      return next;
+                                    });
+                                    alert('Error: ' + err.message);
                                   });
-                                  alert('Error: ' + err.message);
-                                });
-                              }}
-                              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all min-w-[70px] text-center cursor-pointer ${
-                                isSaved ? 'bg-emerald-500/20 text-emerald-500' :
-                                isSaving ? 'bg-zinc-800 text-zinc-500' :
-                                'bg-blue-600 hover:bg-blue-500 text-white shadow-md shadow-blue-600/10 active:scale-95'
-                              }`}
-                            >
-                              {isSaved ? '✓' : isSaving ? '...' : 'Guardar'}
-                            </button>
+                                }}
+                                className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all min-w-[70px] text-center cursor-pointer ${
+                                  isSaved ? 'bg-emerald-500/20 text-emerald-500' :
+                                  isSaving ? 'bg-zinc-800 text-zinc-500' :
+                                  'bg-blue-600 hover:bg-blue-500 text-white shadow-md shadow-blue-600/10 active:scale-95'
+                                }`}
+                              >
+                                {isSaved ? '✓ Guardado' : isSaving ? '...' : 'Guardar'}
+                              </button>
+                            )}
                           </div>
 
-                          <div className="flex items-center justify-between text-xs">
-                            <label className="flex items-center gap-2 text-zinc-400 cursor-pointer select-none hover:text-zinc-200 transition-colors">
+                          {/* Opciones de Inventario y Modalidad */}
+                          <div className="space-y-1.5 pt-1 border-t border-zinc-800/80">
+                            {/* Checkbox de Puerto Instalado vs Libre */}
+                            <label className={`flex items-center gap-1.5 select-none ${isViewer ? 'cursor-not-allowed opacity-75' : 'cursor-pointer text-blue-400 hover:text-blue-300 font-semibold'}`}>
                               <input 
                                 type="checkbox" 
-                                defaultChecked={camera.is_active} 
-                                id={`modal-cam-active-${camera.id}`}
-                                className="rounded border-zinc-800 bg-zinc-950 text-blue-600 focus:ring-0 focus:ring-offset-0"
+                                defaultChecked={camera.is_installed ?? true} 
+                                id={`modal-cam-inst-${camera.id}`}
+                                disabled={isViewer}
+                                className="rounded border-zinc-800 bg-zinc-950 text-blue-600 focus:ring-0"
                               />
-                              <span>Habilitar en Muro</span>
+                              <span className="text-[11px]">Cámara Instalada (Puerto en Uso)</span>
                             </label>
-                            
-                            <span className="text-[10px] font-bold font-mono text-zinc-500 bg-zinc-950 border border-zinc-800 px-1.5 py-0.5 rounded">
-                              CH {camera.channel}
-                            </span>
+
+                            {/* Toggles de Modalidad de Grabación y Muro */}
+                            <div className="grid grid-cols-2 gap-2 text-xs pt-1 border-t border-zinc-800/40">
+                              <label className={`flex items-center gap-1.5 select-none ${isViewer ? 'cursor-not-allowed opacity-75' : 'cursor-pointer text-zinc-400 hover:text-zinc-200'}`}>
+                                <input 
+                                  type="checkbox" 
+                                  defaultChecked={camera.is_active} 
+                                  id={`modal-cam-active-${camera.id}`}
+                                  disabled={isViewer}
+                                  className="rounded border-zinc-800 bg-zinc-950 text-blue-600 focus:ring-0"
+                                />
+                                <span className="text-[11px]">En Muro</span>
+                              </label>
+
+                              <label className={`flex items-center gap-1.5 select-none ${isViewer ? 'cursor-not-allowed opacity-75' : 'cursor-pointer text-rose-400 hover:text-rose-300 font-semibold'}`}>
+                                <input 
+                                  type="checkbox" 
+                                  defaultChecked={camera.is_recording} 
+                                  id={`modal-cam-rec-${camera.id}`}
+                                  disabled={isViewer}
+                                  className="rounded border-zinc-800 bg-zinc-950 text-rose-600 focus:ring-0"
+                                />
+                                <span className="text-[11px]">Grabar 24/7</span>
+                              </label>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -540,8 +766,6 @@ const DeviceMgmt = () => {
           </div>
         </div>
       )}
-
-
 
       {/* Add/Edit Device Modal */}
       {isModalOpen && (

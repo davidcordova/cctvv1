@@ -5,8 +5,9 @@ import httpx
 from typing import Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
-from app.db.session import get_session, engine
-from app.models.models import Device, Camera
+from app.db.session import get_session
+from app.core.security import require_admin
+from app.models.models import Device, Camera, User
 from app.core.config import settings
 from app.core.go2rtc import start_go2rtc, stop_go2rtc, sync_go2rtc_config
 
@@ -25,6 +26,15 @@ def get_process_memory_mb() -> float:
 
 def get_database_info() -> Dict[str, Any]:
     db_url = settings.DATABASE_URL
+    if "postgresql" in db_url or "postgres" in db_url:
+        return {
+            "path": "PostgreSQL (cctv_db)",
+            "size_bytes": 0,
+            "size_mb": "N/A (Managed DB)",
+            "engine": "PostgreSQL 14+ (SQLModel ORM)",
+            "healthy": True
+        }
+
     # Extract file path from sqlite:///path
     db_path = db_url.replace("sqlite:///", "").replace("sqlite://", "")
     if not os.path.isabs(db_path):
@@ -44,7 +54,10 @@ def get_database_info() -> Dict[str, Any]:
     }
 
 @router.get("/stats")
-async def get_system_stats(session: Session = Depends(get_session)) -> Dict[str, Any]:
+async def get_system_stats(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin)
+) -> Dict[str, Any]:
     uptime_seconds = int(time.time() - SERVER_START_TIME)
     days = uptime_seconds // 86400
     hours = (uptime_seconds % 86400) // 3600
@@ -94,7 +107,9 @@ async def get_system_stats(session: Session = Depends(get_session)) -> Dict[str,
     }
 
 @router.post("/restart-services")
-def restart_services() -> Dict[str, Any]:
+def restart_services(
+    current_user: User = Depends(require_admin)
+) -> Dict[str, Any]:
     try:
         stop_go2rtc()
         sync_go2rtc_config()

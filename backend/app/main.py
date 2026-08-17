@@ -34,42 +34,93 @@ async def check_connectivity(host: str, port: int) -> bool:
 
 
 async def _check_single_device(device: Device):
+    from app.core.hikvision import HikvisionDriver
+    from datetime import datetime
     is_now_online = await check_connectivity(device.host, device.port)
-    return device, is_now_online
+    time_info = None
+    storage_info = None
+
+    if is_now_online:
+        try:
+            driver = HikvisionDriver(device)
+            # Consultar hora y almacenamiento con timeout protegido
+            time_info = await asyncio.wait_for(driver.get_device_time(), timeout=3.0)
+            storage_info = await asyncio.wait_for(driver.get_storage_status(), timeout=3.0)
+        except Exception:
+            pass
+
+    return device, is_now_online, time_info, storage_info
 
 
 async def monitor_devices_loop():
-    await asyncio.sleep(5)
+    await asyncio.sleep(3)
+    from datetime import datetime
     while True:
         try:
+            # 1. Obtener lista de dispositivos
             with Session(engine) as session:
                 devices = session.exec(select(Device)).all()
-                if devices:
-                    results = await asyncio.gather(
-                        *[_check_single_device(d) for d in devices],
-                        return_exceptions=True
-                    )
+                device_copies = [Device(**d.model_dump()) for d in devices]
+
+            if device_copies:
+                results = await asyncio.gather(
+                    *[_check_single_device(d) for d in device_copies],
+                    return_exceptions=True
+                )
+                
+                # 2. Guardar cambios en BD en una sesión breve
+                with Session(engine) as session:
                     for res in results:
                         if isinstance(res, Exception):
                             continue
-                        device, is_now_online = res
-                        if is_now_online != device.is_online:
-                            db_device = session.get(Device, device.id)
-                            if db_device:
-                                db_device.is_online = is_now_online
-                                session.add(db_device)
+                        device, is_now_online, time_info, storage_info = res
+                        db_device = session.get(Device, device.id)
+                        if not db_device:
+                            continue
 
-                                report = Report(
+                        # Cambios de estado online/offline
+                        if is_now_online != db_device.is_online:
+                            db_device.is_online = is_now_online
+                            report = Report(
+                                device_id=db_device.id,
+                                event_type="Conexión" if is_now_online else "Desconexión",
+                                description=f"El grabador {db_device.name} ({db_device.host}) está {'en línea' if is_now_online else 'fuera de línea'}.",
+                                severity="info" if is_now_online else "error"
+                            )
+                            session.add(report)
+
+                        # Actualizar métricas reales de tiempo
+                        if time_info and is_now_online:
+                            prev_offset = db_device.time_offset_seconds or 0
+                            new_offset = time_info.get("offset_seconds", 0)
+                            db_device.time_offset_seconds = new_offset
+                            try:
+                                db_device.device_time = datetime.fromisoformat(time_info.get("device_time", ""))
+                            except Exception:
+                                pass
+
+                            # Si el desfase superó los 5 minutos y antes no estaba reportado
+                            if abs(new_offset) > 300 and abs(prev_offset) <= 300:
+                                report_drift = Report(
                                     device_id=db_device.id,
-                                    event_type="Conexión" if is_now_online else "Desconexión",
-                                    description=f"El dispositivo {db_device.name} ({db_device.host}) está {'en línea' if is_now_online else 'fuera de línea'}.",
-                                    severity="info" if is_now_online else "error"
+                                    event_type="Desfase Horario",
+                                    description=f"Se detectó desfase horario crítico en {db_device.name}: {round(new_offset/60)} min respecto al servidor.",
+                                    severity="warning"
                                 )
-                                session.add(report)
+                                session.add(report_drift)
+
+                        # Actualizar almacenamiento real
+                        if storage_info and is_now_online:
+                            db_device.hdd_status = storage_info.get("hdd_status", db_device.hdd_status)
+                            db_device.hdd_capacity_total_gb = storage_info.get("total_gb", db_device.hdd_capacity_total_gb)
+                            db_device.hdd_capacity_free_gb = storage_info.get("free_gb", db_device.hdd_capacity_free_gb)
+
+                        session.add(db_device)
                     session.commit()
         except Exception as e:
             print(f"Error in device monitoring loop: {e}")
         await asyncio.sleep(30)
+
 
 
 @asynccontextmanager
@@ -88,13 +139,13 @@ async def lifespan(app: FastAPI):
                 admin_user = User(
                     username="admin",
                     full_name="Administrador del Sistema",
-                    hashed_password=security.get_password_hash("M1un1c4cl4v3"),
+                    hashed_password=security.get_password_hash("admin"),
                     role=UserRole.ADMIN,
                     is_active=True
                 )
                 session.add(admin_user)
                 session.commit()
-                print("Default admin user created")
+                print("Default admin user created (admin/admin)")
         monitor_task = asyncio.create_task(monitor_devices_loop())
     except Exception as e:
         print(f"Error creating database tables or admin user: {e}")

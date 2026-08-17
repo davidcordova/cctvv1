@@ -69,4 +69,19 @@ def get_current_user(
         )
     return user
 
+def require_roles(*allowed_roles: str):
+    def role_checker(current_user=Depends(get_current_user)):
+        user_role_str = str(current_user.role.value if hasattr(current_user.role, 'value') else current_user.role).lower()
+        allowed_lower = [r.lower() for r in allowed_roles]
+        if user_role_str not in allowed_lower:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Acceso denegado. Se requiere uno de los siguientes roles: {', '.join(allowed_roles)}"
+            )
+        return current_user
+    return role_checker
+
+require_admin = require_roles("admin")
+require_operator_or_admin = require_roles("admin", "operator")
+
 

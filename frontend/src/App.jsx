@@ -29,6 +29,9 @@ const SidebarItem = ({ icon: Icon, label, to }) => (
 
 const Sidebar = () => {
   const { user, logout } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const isOperator = user?.role === 'operator';
+  const isViewer = user?.role === 'viewer';
 
   return (
     <aside className="w-64 h-screen glass border-r border-zinc-800 flex flex-col p-4 select-none">
@@ -40,17 +43,25 @@ const Sidebar = () => {
       </div>
       
       <nav className="flex-1 space-y-1">
-        <SidebarItem icon={LayoutDashboard} label="Dashboard" to="/" />
+        {!isViewer && (
+          <SidebarItem icon={LayoutDashboard} label="Dashboard" to="/" />
+        )}
         <SidebarItem icon={Video} label="Muro de Cámaras" to="/wall" />
-        <SidebarItem icon={Settings} label="Dispositivos" to="/devices" />
-        <SidebarItem icon={FileText} label="Reportes" to="/reports" />
-        {user?.role === 'admin' && (
+        {!isViewer && (
+          <SidebarItem icon={Settings} label="Dispositivos" to="/devices" />
+        )}
+        {!isViewer && (
+          <SidebarItem icon={FileText} label="Reportes" to="/reports" />
+        )}
+        {isAdmin && (
           <SidebarItem icon={Users} label="Usuarios" to="/users" />
         )}
       </nav>
       
       <div className="pt-4 border-t border-zinc-800 space-y-3">
-        <SidebarItem icon={Settings} label="Configuración" to="/system" />
+        {isAdmin && (
+          <SidebarItem icon={Settings} label="Configuración" to="/system" />
+        )}
         
         {/* User Profile Card & Logout */}
         {user && (
@@ -61,7 +72,11 @@ const Sidebar = () => {
               </div>
               <div className="min-w-0">
                 <p className="text-xs font-bold text-zinc-200 truncate">{user.full_name || user.username}</p>
-                <span className="text-[10px] uppercase font-bold tracking-wider text-blue-400">
+                <span className={`text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded ${
+                  user.role === 'admin' ? 'text-blue-400 bg-blue-500/10' :
+                  user.role === 'operator' ? 'text-amber-400 bg-amber-500/10' :
+                  'text-purple-400 bg-purple-500/10'
+                }`}>
                   {user.role}
                 </span>
               </div>
@@ -80,8 +95,8 @@ const Sidebar = () => {
   );
 };
 
-const ProtectedRoute = ({ children }) => {
-  const { isAuthenticated, isLoading } = useAuth();
+const ProtectedRoute = ({ children, allowedRoles }) => {
+  const { isAuthenticated, isLoading, user } = useAuth();
   const location = useLocation();
 
   if (isLoading) {
@@ -96,6 +111,10 @@ const ProtectedRoute = ({ children }) => {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
+  if (allowedRoles && user && !allowedRoles.includes(user.role)) {
+    return <Navigate to="/wall" replace />;
+  }
+
   return children;
 };
 
@@ -108,6 +127,39 @@ const MainLayout = ({ children }) => (
   </div>
 );
 
+function AppRoutes() {
+  const { user } = useAuth();
+  const isViewer = user?.role === 'viewer';
+
+  return (
+    <Routes>
+      <Route path="/" element={isViewer ? <Navigate to="/wall" replace /> : <Dashboard />} />
+      <Route path="/wall" element={<CameraWall />} />
+      <Route path="/devices" element={
+        <ProtectedRoute allowedRoles={['admin', 'operator']}>
+          <DeviceMgmt />
+        </ProtectedRoute>
+      } />
+      <Route path="/reports" element={
+        <ProtectedRoute allowedRoles={['admin', 'operator']}>
+          <ReportMgmt />
+        </ProtectedRoute>
+      } />
+      <Route path="/users" element={
+        <ProtectedRoute allowedRoles={['admin']}>
+          <UserMgmt />
+        </ProtectedRoute>
+      } />
+      <Route path="/system" element={
+        <ProtectedRoute allowedRoles={['admin']}>
+          <SystemMgmt />
+        </ProtectedRoute>
+      } />
+      <Route path="*" element={<Navigate to={isViewer ? "/wall" : "/"} replace />} />
+    </Routes>
+  );
+}
+
 function App() {
   return (
     <Router>
@@ -118,15 +170,7 @@ function App() {
           <Route path="/*" element={
             <ProtectedRoute>
               <MainLayout>
-                <Routes>
-                  <Route path="/" element={<Dashboard />} />
-                  <Route path="/wall" element={<CameraWall />} />
-                  <Route path="/devices" element={<DeviceMgmt />} />
-                  <Route path="/reports" element={<ReportMgmt />} />
-                  <Route path="/users" element={<UserMgmt />} />
-                  <Route path="/system" element={<SystemMgmt />} />
-                  <Route path="*" element={<Navigate to="/" replace />} />
-                </Routes>
+                <AppRoutes />
               </MainLayout>
             </ProtectedRoute>
           } />

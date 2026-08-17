@@ -31,6 +31,21 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Interceptor de respuesta para manejar expiración de token (401)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response && error.response.status === 401) {
+      if (window.location.pathname !== '/login') {
+        localStorage.removeItem('token');
+        localStorage.removeItem('cctv_user');
+        window.location.href = '/login';
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 export const deviceService = {
   getDevices: () => api.get('/devices/'),
   createDevice: (data) => api.post('/devices/', data),

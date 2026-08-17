@@ -1,0 +1,22 @@
+=======================================================
+          SISTEMA DE GESTION CCTV MASTER
+=======================================================
+
+Instalacion completada satisfactoriamente.
+
+DATOS DE ACCESO AL SISTEMA:
+-------------------------------------------------------
+  * Direccion Web:   http://localhost:8500
+  * Usuario Admin:   admin
+  * Clave por Defecto: admin
+-------------------------------------------------------
+
+RECOMENDACION DE SEGURIDAD:
+Una vez que ingrese al sistema, puede crear nuevos usuarios
+o cambiar la contrasena del usuario administrador desde el
+modulo de Gestion de Usuarios.
+
+Para iniciar o detener el servidor manualmente utilice los
+accesos directos creados en el Menu Inicio o en la carpeta
+de instalacion.
+=======================================================

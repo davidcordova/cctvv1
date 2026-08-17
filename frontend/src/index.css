@@ -29,3 +29,143 @@ body {
   border-radius: 0.75rem;
   padding: 1.25rem;
 }
+
+/* ==========================================================================
+   ESTILOS DE IMPRESIÓN Y REPORTE EJECUTIVO CORPORATIVO (PDF / PRINT LIMPIO)
+   CERO MARCOS NEGROS, FONDO BLANCO PURO Y TABLAS PROFESIONALES
+   ========================================================================== */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm 10mm 8mm 10mm;
+  }
+
+  /* Blanquear completamente todos los contenedores raíz del navegador */
+  :root,
+  html,
+  body,
+  #root,
+  #root > div,
+  main,
+  div {
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    border-color: #cbd5e1 !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: auto !important;
+    overflow: visible !important;
+    font-size: 9.5pt !important;
+    line-height: 1.35 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Ocultar elementos de la interfaz interactiva y toda vista de fondo */
+  aside,
+  nav,
+  header,
+  footer,
+  button,
+  input,
+  select,
+  .no-print,
+  .glass,
+  .card-zinc,
+  main > div:not(#executive-report-modal-wrapper),
+  div.print\:hidden {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+
+  /* Aislamiento y expansión limpia del Modal de Reporte */
+  #executive-report-modal-wrapper {
+    position: static !important;
+    display: block !important;
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+    border: none !important;
+    backdrop-filter: none !important;
+  }
+
+  #executive-report-modal-frame {
+    display: block !important;
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  #executive-report-document {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  /* Tablas corporativas de alta precisión */
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    table-layout: fixed !important;
+  }
+
+  th, td {
+    padding: 4px 6px !important;
+    overflow: visible !important;
+    word-break: normal !important;
+  }
+
+  img {
+    max-width: 100% !important;
+    display: block !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Prevención de cortes de página */
+  .page-break-avoid,
+  .report-photo-grid,
+  .report-photo-card,
+  .report-signature-block,
+  tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .page-break-before {
+    break-before: page !important;
+    page-break-before: always !important;
+  }
+}

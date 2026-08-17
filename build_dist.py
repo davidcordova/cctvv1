@@ -52,12 +52,14 @@ def main():
     with open(iniciar_bat, "w", encoding="utf-8") as f:
         f.write('@echo off\n')
         f.write('title Sistema CCTV - Servidor\n')
+        f.write('cd /d "%~dp0"\n')
         f.write('echo Iniciando Sistema de Gestion CCTV...\n')
         f.write('start "" "%~dp0cctv_backend.exe"\n')
 
     detener_bat = os.path.join(OUTPUT_DIR, "Detener_CCTV.bat")
     with open(detener_bat, "w", encoding="utf-8") as f:
         f.write('@echo off\n')
+        f.write('cd /d "%~dp0"\n')
         f.write('echo Deteniendo procesos del Sistema CCTV...\n')
         f.write('taskkill /F /IM cctv_backend.exe /T 2>nul\n')
         f.write('taskkill /F /IM go2rtc.exe /T 2>nul\n')
@@ -70,6 +72,7 @@ def main():
 
     log("Step 6: Buscando Inno Setup Compiler para generar el instalador .exe...")
     inno_paths = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"),
         r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
         r"C:\Program Files\Inno Setup 6\ISCC.exe",
         r"C:\Program Files (x86)\Inno Setup 5\ISCC.exe",

@@ -1,22 +1,27 @@
 from typing import Any, List
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 from app.db.session import get_session
-from app.models.models import Device, Camera, Brand, Report
+from app.models.models import Device, Camera, Brand, Report, User
 from app.schemas.device import DeviceCreate, DeviceUpdate, DeviceRead
 from app.core.hikvision import HikvisionDriver, generate_rtsp_url
+from app.core.security import get_current_user, require_admin, require_operator_or_admin
 from app.core import scanner
 
 router = APIRouter()
 
 @router.get("/scan")
-def scan_network():
+def scan_network(
+    current_user: User = Depends(require_admin)
+):
     found_devices = scanner.scan_hikvision()
     return found_devices
 
 @router.get("/", response_model=List[DeviceRead])
 def read_devices(
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
     skip: int = 0,
     limit: int = 100,
 ) -> Any:
@@ -27,6 +32,7 @@ def read_devices(
 async def create_device(
     *,
     session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
     device_in: DeviceCreate
 ) -> Any:
     device = Device.model_validate(device_in)
@@ -95,6 +101,7 @@ async def create_device(
 def delete_device(
     *,
     session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
     device_id: int
 ) -> Any:
     device = session.get(Device, device_id)
@@ -106,8 +113,15 @@ def delete_device(
     for report in reports:
         session.delete(report)
 
-    # Delete associated cameras
+    # Delete associated cameras and their user permission links
     cameras = session.exec(select(Camera).where(Camera.device_id == device_id)).all()
+    camera_ids = [c.id for c in cameras if c.id is not None]
+    if camera_ids:
+        from app.models.models import UserCameraLink
+        links = session.exec(select(UserCameraLink).where(UserCameraLink.camera_id.in_(camera_ids))).all()
+        for link in links:
+            session.delete(link)
+
     for camera in cameras:
         session.delete(camera)
         
@@ -125,6 +139,7 @@ def delete_device(
 def update_device(
     *,
     session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
     device_id: int,
     device_in: DeviceUpdate
 ) -> Any:
@@ -203,6 +218,7 @@ def update_device(
 async def reboot_device(
     *,
     session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
     device_id: int
 ) -> Any:
     device = session.get(Device, device_id)
@@ -234,6 +250,7 @@ async def reboot_device(
 async def shutdown_device(
     *,
     session: Session = Depends(get_session),
+    current_user: User = Depends(require_admin),
     device_id: int
 ) -> Any:
     device = session.get(Device, device_id)
@@ -259,3 +276,140 @@ async def shutdown_device(
             raise HTTPException(status_code=500, detail="El dispositivo rechazó el comando de apagado (algunos modelos no lo soportan por software)")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al apagar: {str(e)}")
+
+
+@router.post("/{device_id}/sync-time")
+async def sync_device_time(
+    *,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_operator_or_admin),
+    device_id: int
+) -> Any:
+    from datetime import datetime
+    device = session.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Dispositivo no encontrado")
+    
+    try:
+        driver = HikvisionDriver(device)
+        result = await driver.sync_time()
+        
+        now = datetime.now()
+        device.device_time = now
+        device.time_offset_seconds = 0
+        device.time_synced_at = now
+        session.add(device)
+        
+        report = Report(
+            device_id=device.id,
+            event_type="Sincronización de Hora",
+            description=f"Fecha y hora del grabador {device.name} sincronizada exitosamente con el servidor local ({now.strftime('%d/%m/%Y %H:%M:%S')}).",
+            severity="info"
+        )
+        session.add(report)
+        session.commit()
+        session.refresh(device)
+        
+        return {
+            "ok": True,
+            "message": f"Grabador '{device.name}' sincronizado con la hora del servidor ({now.strftime('%H:%M:%S')})",
+            "device": device
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al sincronizar fecha/hora: {str(e)}")
+
+
+@router.post("/sync-all-time")
+async def sync_all_devices_time(
+    *,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_operator_or_admin),
+) -> Any:
+    from datetime import datetime
+    devices = session.exec(select(Device)).all()
+    now = datetime.now()
+
+    async def _sync_single(dev: Device):
+        if not dev.is_online:
+            return {"id": dev.id, "name": dev.name, "status": "offline"}
+        try:
+            driver = HikvisionDriver(dev)
+            await asyncio.wait_for(driver.sync_time(), timeout=3.0)
+            return {"id": dev.id, "name": dev.name, "status": "synced", "now": now}
+        except Exception as e:
+            return {"id": dev.id, "name": dev.name, "status": "error", "error": str(e)}
+
+    results = await asyncio.gather(*[_sync_single(d) for d in devices], return_exceptions=False)
+    
+    for r in results:
+        if r.get("status") == "synced":
+            dev_obj = session.get(Device, r["id"])
+            if dev_obj:
+                dev_obj.device_time = r["now"]
+                dev_obj.time_offset_seconds = 0
+                dev_obj.time_synced_at = r["now"]
+                session.add(dev_obj)
+
+    session.commit()
+    return {
+        "ok": True,
+        "message": f"Sincronización masiva de hora completada a las {now.strftime('%H:%M:%S')}",
+        "results": results
+    }
+
+
+@router.post("/refresh-all")
+async def refresh_all_devices(
+    *,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_operator_or_admin),
+) -> Any:
+    from app.core.hikvision import HikvisionDriver
+    from datetime import datetime
+    devices = session.exec(select(Device)).all()
+
+    async def _refresh_single(dev: Device):
+        if not dev.is_online:
+            return None
+        try:
+            driver = HikvisionDriver(dev)
+            time_task = asyncio.wait_for(driver.get_device_time(), timeout=3.0)
+            storage_task = asyncio.wait_for(driver.get_storage_status(), timeout=3.0)
+            time_info, storage_info = await asyncio.gather(time_task, storage_task, return_exceptions=True)
+            return {
+                "id": dev.id,
+                "time_info": time_info if isinstance(time_info, dict) else {},
+                "storage_info": storage_info if isinstance(storage_info, dict) else {}
+            }
+        except Exception:
+            return None
+
+    results = await asyncio.gather(*[_refresh_single(d) for d in devices], return_exceptions=False)
+    
+    for r in results:
+        if not r:
+            continue
+        dev_obj = session.get(Device, r["id"])
+        if not dev_obj:
+            continue
+        time_info = r.get("time_info", {})
+        storage_info = r.get("storage_info", {})
+
+        if time_info:
+            dev_obj.time_offset_seconds = time_info.get("offset_seconds", dev_obj.time_offset_seconds)
+            try:
+                dev_obj.device_time = datetime.fromisoformat(time_info.get("device_time", ""))
+            except Exception:
+                pass
+
+        if storage_info:
+            dev_obj.hdd_status = storage_info.get("hdd_status", dev_obj.hdd_status)
+            dev_obj.hdd_capacity_total_gb = storage_info.get("total_gb", dev_obj.hdd_capacity_total_gb)
+            dev_obj.hdd_capacity_free_gb = storage_info.get("free_gb", dev_obj.hdd_capacity_free_gb)
+
+        session.add(dev_obj)
+
+    session.commit()
+    return {"ok": True, "message": "Dispositivos actualizados en tiempo real"}
+
+

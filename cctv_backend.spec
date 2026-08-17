@@ -35,7 +35,11 @@ hiddenimports = [
     'sqlite3',
     'pydantic_settings',
     'passlib',
+    'passlib.handlers.bcrypt',
     'cryptography',
+    'jose',
+    'psycopg2',
+    'pymysql',
 ] + collect_submodules('app')
 
 a = Analysis(
