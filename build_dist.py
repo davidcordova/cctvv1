@@ -19,20 +19,28 @@ def run_cmd(cmd, cwd=None):
         print(f"Error executing command: {cmd}")
         sys.exit(res.returncode)
 
+def get_python_exe():
+    venv_py1 = os.path.join(PROJECT_DIR, "backend", "venv", "Scripts", "python.exe")
+    if os.path.exists(venv_py1):
+        return venv_py1
+    venv_py2 = os.path.join(PROJECT_DIR, ".venv", "Scripts", "python.exe")
+    if os.path.exists(venv_py2):
+        return venv_py2
+    return sys.executable
+
 def main():
+    py_exe = get_python_exe()
+    print(f"Utilizando interprete Python: {py_exe}")
+
     log("Step 1: Compilando Frontend React/Vite...")
     run_cmd("npm run build", cwd=FRONTEND_DIR)
 
     log("Step 2: Verificando/Instalando PyInstaller...")
-    try:
-        import PyInstaller
-    except ImportError:
-        print("PyInstaller no encontrado. Instalando via pip...")
-        run_cmd(f'"{sys.executable}" -m pip install pyinstaller')
+    run_cmd(f'"{py_exe}" -m pip install pyinstaller', cwd=PROJECT_DIR)
 
     log("Step 3: Compilando Backend con PyInstaller...")
     spec_path = os.path.join(PROJECT_DIR, "cctv_backend.spec")
-    run_cmd(f'"{sys.executable}" -m PyInstaller --noconfirm "{spec_path}"', cwd=PROJECT_DIR)
+    run_cmd(f'"{py_exe}" -m PyInstaller --noconfirm "{spec_path}"', cwd=PROJECT_DIR)
 
     log("Step 4: Asegurando binarios externos (go2rtc.exe y go2rtc.yaml)...")
     go2rtc_src = os.path.join(BACKEND_DIR, "go2rtc.exe")
@@ -53,18 +61,27 @@ def main():
         f.write('@echo off\n')
         f.write('title Sistema CCTV - Servidor\n')
         f.write('cd /d "%~dp0"\n')
-        f.write('echo Iniciando Sistema de Gestion CCTV...\n')
+        f.write('echo ========================================================\n')
+        f.write('echo         SISTEMA DE GESTION CCTV - INICIANDO\n')
+        f.write('echo ========================================================\n')
+        f.write('taskkill /F /IM cctv_backend.exe /T 2>nul\n')
+        f.write('taskkill /F /IM go2rtc.exe /T 2>nul\n')
+        f.write('echo Iniciando servidor backend y streaming...\n')
         f.write('start "" "%~dp0cctv_backend.exe"\n')
 
     detener_bat = os.path.join(OUTPUT_DIR, "Detener_CCTV.bat")
     with open(detener_bat, "w", encoding="utf-8") as f:
         f.write('@echo off\n')
+        f.write('title Sistema CCTV - Detener\n')
         f.write('cd /d "%~dp0"\n')
+        f.write('echo ========================================================\n')
+        f.write('echo         SISTEMA DE GESTION CCTV - DETENIENDO\n')
+        f.write('echo ========================================================\n')
         f.write('echo Deteniendo procesos del Sistema CCTV...\n')
         f.write('taskkill /F /IM cctv_backend.exe /T 2>nul\n')
         f.write('taskkill /F /IM go2rtc.exe /T 2>nul\n')
-        f.write('echo Procesos finalizados.\n')
-        f.write('pause\n')
+        f.write('echo Procesos finalizados con exito.\n')
+        f.write('timeout /t 2 >nul\n')
 
     # También crear lanzadores en la raíz del dist
     shutil.copy2(iniciar_bat, os.path.join(DIST_DIR, "Iniciar_CCTV.bat"))
@@ -95,6 +112,7 @@ def main():
         print("Puedes distribuir la carpeta 'cctv_backend' o compilar manualmente 'installer.iss' si instalas Inno Setup.")
 
     log("Empaquetado completado exitosamente!")
+
 
 if __name__ == "__main__":
     main()
