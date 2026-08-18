@@ -803,19 +803,32 @@ const DeviceMgmt = () => {
                 </div>
                 <div className="space-y-1.5">
                   <label className="text-xs font-bold text-zinc-500 uppercase">Tipo</label>
-                  <select className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.device_type} onChange={(e) => setFormData({...formData, device_type: e.target.value})}>
+                  <select 
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" 
+                    value={formData.device_type} 
+                    onChange={(e) => {
+                      const newType = e.target.value;
+                      const newCount = newType === 'IPC' ? 1 : (formData.channel_count === 1 ? 8 : formData.channel_count);
+                      setFormData({...formData, device_type: newType, channel_count: newCount});
+                    }}
+                  >
                     <option value="DVR">DVR</option>
                     <option value="NVR">NVR</option>
                     <option value="IPC">Cámara IP</option>
                   </select>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">Canales del DVR</label>
+                  <label className="text-xs font-bold text-zinc-500 uppercase">
+                    {formData.device_type === 'IPC' ? 'Canales / Lentes' : 'Canales del Grabador'}
+                  </label>
                   <select className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.channel_count} onChange={(e) => setFormData({...formData, channel_count: parseInt(e.target.value)})}>
+                    <option value={1}>1 Canal (Cámara Individual)</option>
+                    <option value={2}>2 Canales (Doble Lente)</option>
                     <option value={4}>4 Canales</option>
                     <option value={8}>8 Canales</option>
                     <option value={16}>16 Canales</option>
                     <option value={32}>32 Canales</option>
+                    <option value={64}>64 Canales</option>
                   </select>
                 </div>
                 <div className="space-y-1.5">
