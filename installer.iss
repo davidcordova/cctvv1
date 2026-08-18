@@ -48,4 +48,9 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncher}"; WorkingD
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; Tasks: startupicon
 
 [Run]
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Web (8500)"" dir=in action=allow protocol=TCP localport=8500 profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Stream API (1984)"" dir=in action=allow protocol=TCP localport=1984 profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - WebRTC (8555 UDP)"" dir=in action=allow protocol=UDP localport=8555 profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - WebRTC (8555 TCP)"" dir=in action=allow protocol=TCP localport=8555 profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - RTSP (8554)"" dir=in action=allow protocol=TCP localport=8554 profile=any"; Flags: runhidden
 Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; Description: "Ejecutar {#MyAppName} ahora"; Flags: shellexec postinstall skipifsilent
