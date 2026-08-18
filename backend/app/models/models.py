@@ -75,6 +75,7 @@ class Camera(SQLModel, table=True):
     is_recording: bool = Field(default=True)
     recording_mode: Optional[str] = Field(default="Continuo (24/7)")
     has_video_signal: bool = Field(default=True)
+    audio_enabled: bool = Field(default=False) # True: Audio activado / False: Silenciado (Por defecto)
 
 class ViewGroup(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

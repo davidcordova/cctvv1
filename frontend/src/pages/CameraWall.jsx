@@ -19,7 +19,9 @@ import {
   GripVertical,
   Check,
   RotateCcw,
-  ArrowLeftRight
+  ArrowLeftRight,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
@@ -52,6 +54,8 @@ const CameraCard = ({
   const [imgError, setImgError] = useState(false);
   const [webrtcError, setWebrtcError] = useState(false);
   const [isRefreshingCard, setIsRefreshingCard] = useState(false);
+
+  const [isAudioActive, setIsAudioActive] = useState(camera.audio_enabled || false);
 
   // Update snapshot when parent triggers a refresh
   useEffect(() => {
@@ -96,8 +100,8 @@ const CameraCard = ({
       <div className="w-full h-full relative aspect-video flex items-center justify-center bg-black overflow-hidden">
         {useWebRTC ? (
           <iframe 
-            key={`wall-stream-${camera.id}-${refreshKey}-${cardLocalKey}`}
-            src={`http://${window.location.hostname}:1984/stream.html?src=camera_${camera.id}&mode=webrtc,mse,mp4,mjpeg`} 
+            key={`wall-stream-${camera.id}-${refreshKey}-${cardLocalKey}-${isAudioActive ? 'audio' : 'mute'}`}
+            src={`http://${window.location.hostname}:1984/stream.html?src=camera_${camera.id}&mode=webrtc,mse,mp4,mjpeg&media=${isAudioActive ? 'video,audio' : 'video'}&muted=${isAudioActive ? '0' : '1'}`} 
             title={camera.name}
             className="absolute inset-0 w-full h-full border-0 pointer-events-none"
             scrolling="no"
@@ -209,7 +213,22 @@ const CameraCard = ({
         {!isReordering && (
           <div className="absolute bottom-0 left-0 right-0 p-2.5 bg-gradient-to-t from-black/80 via-black/40 to-transparent flex justify-between items-end opacity-0 group-hover:opacity-100 transition-all duration-300 transform translate-y-2 group-hover:translate-y-0 z-20 pointer-events-none">
             <span className="text-[10px] text-zinc-300 font-mono font-bold bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded border border-zinc-700/60">CH {camera.channel}</span>
-            <div className="flex gap-1.5 pointer-events-auto">
+            <div className="flex gap-1.5 pointer-events-auto items-center">
+              <button 
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsAudioActive(prev => !prev);
+                }}
+                className={`p-1 rounded transition-all hover:scale-110 active:scale-95 ${
+                  isAudioActive 
+                    ? 'bg-amber-500 text-black font-bold shadow-lg shadow-amber-500/30' 
+                    : 'bg-black/60 hover:bg-zinc-700 text-zinc-300 hover:text-white'
+                }`}
+                title={isAudioActive ? "Silenciar audio" : "Escuchar audio / micrófono"}
+              >
+                {isAudioActive ? <Volume2 size={13} /> : <VolumeX size={13} />}
+              </button>
               <button 
                 type="button"
                 onClick={handleCardRefresh}
@@ -247,6 +266,7 @@ const CameraWall = () => {
   const [zoomedCamera, setZoomedCamera] = useState(null);
   const [modalStreamKey, setModalStreamKey] = useState(0);
   const [modalMode, setModalMode] = useState('live');
+  const [modalAudioEnabled, setModalAudioEnabled] = useState(false);
   const [videoFit, setVideoFit] = useState('contain');
   const [streamMode, setStreamMode] = useState('webrtc');
   const [autoRefreshSec, setAutoRefreshSec] = useState(5);
@@ -488,6 +508,7 @@ const CameraWall = () => {
       ...camera,
       url: currentSnapshotUrl
     });
+    setModalAudioEnabled(camera.audio_enabled || false);
     setModalMode(streamMode === 'webrtc' && isWebRTCAvailable ? 'live' : 'snapshot');
   };
 
@@ -1103,6 +1124,21 @@ const CameraWall = () => {
                   <span className="hidden sm:inline">Refrescar</span>
                 </button>
 
+                {/* Botón Audio / Micrófono en Zoom Modal */}
+                <button 
+                  type="button"
+                  onClick={() => setModalAudioEnabled(prev => !prev)}
+                  className={`p-2 rounded-lg transition-all text-xs font-medium flex items-center gap-1.5 active:scale-95 border cursor-pointer ${
+                    modalAudioEnabled 
+                      ? 'bg-amber-500 hover:bg-amber-400 text-black border-amber-400 font-bold shadow-lg shadow-amber-500/20' 
+                      : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border-zinc-700/50'
+                  }`}
+                  title={modalAudioEnabled ? "Silenciar audio" : "Escuchar audio / micrófono de la cámara"}
+                >
+                  {modalAudioEnabled ? <Volume2 size={14} className="animate-pulse" /> : <VolumeX size={14} />}
+                  <span className="hidden sm:inline">{modalAudioEnabled ? 'Audio Activo' : 'Silenciado'}</span>
+                </button>
+
                 {/* Botón Ajuste de Pantalla (Proporcional vs Llenar) */}
                 <button
                   type="button"
@@ -1153,6 +1189,7 @@ const CameraWall = () => {
                       ...prevCam,
                       url: `${api.defaults.baseURL}/cameras/${prevCam.id}/snapshot?t=${Date.now()}`
                     });
+                    setModalAudioEnabled(prevCam.audio_enabled || false);
                     setModalStreamKey(prev => prev + 1);
                   }}
                   className="absolute left-3 md:left-6 top-1/2 -translate-y-1/2 z-30 p-2.5 md:p-3 rounded-full bg-zinc-900/80 hover:bg-blue-600 text-zinc-300 hover:text-white backdrop-blur-md border border-zinc-700/50 shadow-2xl transition-all active:scale-90 cursor-pointer"
@@ -1166,8 +1203,8 @@ const CameraWall = () => {
               <div className="w-full h-full max-w-full max-h-full flex items-center justify-center relative bg-black">
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' ? (
                   <iframe 
-                    key={`modal-stream-${zoomedCamera.id}-${modalStreamKey}`}
-                    src={`http://${window.location.hostname}:1984/stream.html?src=camera_${zoomedCamera.id}_hd&mode=webrtc,mse,mp4,mjpeg`} 
+                    key={`modal-stream-${zoomedCamera.id}-${modalStreamKey}-${modalAudioEnabled ? 'audio' : 'mute'}`}
+                    src={`http://${window.location.hostname}:1984/stream.html?src=camera_${zoomedCamera.id}_hd&mode=webrtc,mse,mp4,mjpeg&media=${modalAudioEnabled ? 'video,audio' : 'video'}&muted=${modalAudioEnabled ? '0' : '1'}`} 
                     title={zoomedCamera.name}
                     className="w-full h-full max-h-full max-w-full border-0 z-10"
                     scrolling="no"
@@ -1194,6 +1231,7 @@ const CameraWall = () => {
                       ...nextCam,
                       url: `${api.defaults.baseURL}/cameras/${nextCam.id}/snapshot?t=${Date.now()}`
                     });
+                    setModalAudioEnabled(nextCam.audio_enabled || false);
                     setModalStreamKey(prev => prev + 1);
                   }}
                   className="absolute right-3 md:right-6 top-1/2 -translate-y-1/2 z-30 p-2.5 md:p-3 rounded-full bg-zinc-900/80 hover:bg-blue-600 text-zinc-300 hover:text-white backdrop-blur-md border border-zinc-700/50 shadow-2xl transition-all active:scale-90 cursor-pointer"

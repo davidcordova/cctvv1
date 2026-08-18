@@ -714,6 +714,7 @@ const DeviceMgmt = () => {
                                   const newInstalled = document.getElementById(`modal-cam-inst-${camera.id}`).checked;
                                   const newActive = newInstalled ? document.getElementById(`modal-cam-active-${camera.id}`).checked : false;
                                   const newRecording = newInstalled ? document.getElementById(`modal-cam-rec-${camera.id}`).checked : false;
+                                  const newAudio = document.getElementById(`modal-cam-audio-${camera.id}`)?.checked ?? false;
                                   
                                   setSavingCameraIds(prev => new Set([...prev, camera.id]));
                                   api.put(`/cameras/${camera.id}`, { 
@@ -721,6 +722,7 @@ const DeviceMgmt = () => {
                                     is_installed: newInstalled,
                                     is_active: newActive,
                                     is_recording: newRecording,
+                                    audio_enabled: newAudio,
                                     recording_mode: !newInstalled ? "Puerto Libre / Sin Cámara" : newRecording ? "Continuo (24/7)" : "No Grabando / Deshabilitado"
                                   }).then(() => {
                                     queryClient.invalidateQueries({ queryKey: ['cameras'] });
@@ -773,9 +775,9 @@ const DeviceMgmt = () => {
                               <span className="text-[11px]">Cámara Instalada (Puerto en Uso)</span>
                             </label>
 
-                            {/* Toggles de Modalidad de Grabación y Muro */}
-                            <div className="grid grid-cols-2 gap-2 text-xs pt-1 border-t border-zinc-800/40">
-                              <label className={`flex items-center gap-1.5 select-none ${isViewer ? 'cursor-not-allowed opacity-75' : 'cursor-pointer text-zinc-400 hover:text-zinc-200'}`}>
+                            {/* Toggles de Modalidad de Grabación, Muro y Audio */}
+                            <div className="grid grid-cols-3 gap-1.5 text-xs pt-1 border-t border-zinc-800/40">
+                              <label className={`flex items-center gap-1 select-none ${isViewer ? 'cursor-not-allowed opacity-75' : 'cursor-pointer text-zinc-400 hover:text-zinc-200'}`}>
                                 <input 
                                   type="checkbox" 
                                   defaultChecked={camera.is_active} 
@@ -783,10 +785,10 @@ const DeviceMgmt = () => {
                                   disabled={isViewer}
                                   className="rounded border-zinc-800 bg-zinc-950 text-blue-600 focus:ring-0"
                                 />
-                                <span className="text-[11px]">En Muro</span>
+                                <span className="text-[10px]">En Muro</span>
                               </label>
 
-                              <label className={`flex items-center gap-1.5 select-none ${isViewer ? 'cursor-not-allowed opacity-75' : 'cursor-pointer text-rose-400 hover:text-rose-300 font-semibold'}`}>
+                              <label className={`flex items-center gap-1 select-none ${isViewer ? 'cursor-not-allowed opacity-75' : 'cursor-pointer text-rose-400 hover:text-rose-300 font-semibold'}`}>
                                 <input 
                                   type="checkbox" 
                                   defaultChecked={camera.is_recording} 
@@ -794,7 +796,18 @@ const DeviceMgmt = () => {
                                   disabled={isViewer}
                                   className="rounded border-zinc-800 bg-zinc-950 text-rose-600 focus:ring-0"
                                 />
-                                <span className="text-[11px]">Grabar 24/7</span>
+                                <span className="text-[10px]">Grabar 24/7</span>
+                              </label>
+
+                              <label className={`flex items-center gap-1 select-none ${isViewer ? 'cursor-not-allowed opacity-75' : 'cursor-pointer text-amber-400 hover:text-amber-300 font-semibold'}`}>
+                                <input 
+                                  type="checkbox" 
+                                  defaultChecked={camera.audio_enabled ?? false} 
+                                  id={`modal-cam-audio-${camera.id}`}
+                                  disabled={isViewer}
+                                  className="rounded border-zinc-800 bg-zinc-950 text-amber-500 focus:ring-0"
+                                />
+                                <span className="text-[10px]">Audio</span>
                               </label>
                             </div>
                           </div>
