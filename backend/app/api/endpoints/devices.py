@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 from app.db.session import get_session
 from app.models.models import Device, Camera, Brand, Report, User
 from app.schemas.device import DeviceCreate, DeviceUpdate, DeviceRead
-from app.core.hikvision import HikvisionDriver, generate_rtsp_url
+from app.core.hikvision import HikvisionDriver, generate_rtsp_url, validate_device_credentials
 from app.core.security import get_current_user, require_admin, require_operator_or_admin
 from app.core import scanner
 
@@ -17,6 +17,24 @@ def scan_network(
 ):
     found_devices = scanner.scan_hikvision()
     return found_devices
+
+@router.post("/test-connection")
+async def test_device_connection(
+    *,
+    payload: dict,
+    current_user: User = Depends(require_admin)
+) -> Any:
+    host = payload.get("host", "").strip()
+    port = int(payload.get("port") or 80)
+    username = payload.get("username", "admin").strip()
+    password = payload.get("password", "")
+    brand = payload.get("brand", "Hikvision")
+
+    if not host:
+        raise HTTPException(status_code=400, detail="Debe ingresar una dirección IP / Host.")
+
+    is_ok, msg = await validate_device_credentials(host, port, username, password, brand)
+    return {"success": is_ok, "message": msg}
 
 @router.get("/", response_model=List[DeviceRead])
 def read_devices(
@@ -35,8 +53,19 @@ async def create_device(
     current_user: User = Depends(require_admin),
     device_in: DeviceCreate
 ) -> Any:
+    # Validar conectividad y credenciales antes de adoptar
+    is_ok, msg = await validate_device_credentials(
+        device_in.host,
+        device_in.port,
+        device_in.username,
+        device_in.password,
+        device_in.brand
+    )
+    if not is_ok:
+        raise HTTPException(status_code=400, detail=msg)
+
     device = Device.model_validate(device_in)
-    device.is_online = True # Set true on initial add to show it was successful
+    device.is_online = True
     session.add(device)
     session.flush()
 
@@ -136,7 +165,7 @@ def delete_device(
 
 
 @router.put("/{device_id}", response_model=DeviceRead)
-def update_device(
+async def update_device(
     *,
     session: Session = Depends(get_session),
     current_user: User = Depends(require_admin),
@@ -153,11 +182,21 @@ def update_device(
         getattr(device_in, key) is not None and getattr(device_in, key) != "" and getattr(device_in, key) != getattr(device, key)
         for key in ["host", "port", "username", "password", "brand"]
     )
-    
+
     update_data = device_in.model_dump(exclude_unset=True)
     # No sobreescribir la contraseña con una cadena vacía si no se ingresó una nueva
     if "password" in update_data and (update_data["password"] is None or update_data["password"].strip() == ""):
         del update_data["password"]
+
+    if credentials_changed:
+        test_host = update_data.get("host", device.host)
+        test_port = update_data.get("port", device.port)
+        test_user = update_data.get("username", device.username)
+        test_pwd = update_data.get("password", device.password)
+        test_brand = update_data.get("brand", device.brand)
+        is_ok, msg = await validate_device_credentials(test_host, test_port, test_user, test_pwd, test_brand)
+        if not is_ok:
+            raise HTTPException(status_code=400, detail=msg)
 
     for key, value in update_data.items():
         setattr(device, key, value)

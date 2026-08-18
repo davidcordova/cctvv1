@@ -131,10 +131,35 @@ const DeviceMgmt = () => {
     }
   };
 
+  const [testStatus, setTestStatus] = useState(null);
+
+  const handleTestConnection = async () => {
+    if (!formData.host) {
+      setTestStatus({ success: false, message: 'Ingrese una dirección IP / Host primero.' });
+      return;
+    }
+    setTestStatus({ loading: true });
+    try {
+      const res = await api.post('/devices/test-connection', formData);
+      setTestStatus({
+        loading: false,
+        success: res.data.success,
+        message: res.data.message
+      });
+    } catch (err) {
+      setTestStatus({
+        loading: false,
+        success: false,
+        message: err.response?.data?.detail || err.message
+      });
+    }
+  };
+
   const addDeviceMutation = useMutation({
     mutationFn: (newDevice) => deviceService.createDevice(newDevice),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] });
+      alert('✓ Dispositivo verificado y agregado exitosamente.');
       closeModal();
     },
     onError: (error) => {
@@ -145,7 +170,8 @@ const DeviceMgmt = () => {
       } else if (typeof detail === 'string') {
         message = detail;
       }
-      alert('Error al añadir dispositivo: ' + message);
+      setTestStatus({ success: false, message });
+      alert('Error al añadir dispositivo:\n' + message);
     }
   });
 
@@ -154,10 +180,19 @@ const DeviceMgmt = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] });
       queryClient.invalidateQueries({ queryKey: ['cameras'] });
+      alert('✓ Dispositivo actualizado correctamente.');
       closeModal();
     },
     onError: (error) => {
-      alert('Error al editar dispositivo: ' + error.message);
+      const detail = error.response?.data?.detail;
+      let message = error.message;
+      if (Array.isArray(detail)) {
+        message = detail.map(d => `${d.loc.join('.')}: ${d.msg}`).join('\n');
+      } else if (typeof detail === 'string') {
+        message = detail;
+      }
+      setTestStatus({ success: false, message });
+      alert('Error al editar dispositivo:\n' + message);
     }
   });
 
@@ -175,6 +210,7 @@ const DeviceMgmt = () => {
   };
 
   const adoptDevice = (dev) => {
+    setTestStatus(null);
     setFormData({
       name: dev.model || 'Grabador CCTV',
       host: dev.host,
@@ -189,6 +225,7 @@ const DeviceMgmt = () => {
   };
 
   const editDevice = (device) => {
+    setTestStatus(null);
     setEditingDevice(device);
     setFormData({
       name: device.name,
@@ -206,6 +243,7 @@ const DeviceMgmt = () => {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingDevice(null);
+    setTestStatus(null);
     setFormData({ name: '', host: '', port: 80, username: 'admin', password: '', device_type: 'DVR', brand: 'Hikvision', channel_count: 8 });
   };
 
@@ -845,11 +883,54 @@ const DeviceMgmt = () => {
                   />
                 </div>
               </div>
+
+              {/* Panel de prueba de conexión */}
+              <div className="pt-2">
+                {testStatus && (
+                  <div className={`p-3 rounded-lg text-xs font-medium mb-3 flex items-start gap-2 ${
+                    testStatus.loading ? 'bg-blue-950/40 text-blue-300 border border-blue-800/60' :
+                    testStatus.success ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-800/60' :
+                    'bg-rose-950/40 text-rose-300 border border-rose-800/60'
+                  }`}>
+                    {testStatus.loading ? (
+                      <>
+                        <RefreshCw className="animate-spin text-blue-400 shrink-0 mt-0.5" size={14} />
+                        <span>Verificando conectividad y autenticación con el dispositivo...</span>
+                      </>
+                    ) : testStatus.success ? (
+                      <>
+                        <CheckCircle2 className="text-emerald-400 shrink-0 mt-0.5" size={14} />
+                        <span>{testStatus.message}</span>
+                      </>
+                    ) : (
+                      <>
+                        <AlertTriangle className="text-rose-400 shrink-0 mt-0.5" size={14} />
+                        <span>{testStatus.message}</span>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                <button 
+                  type="button" 
+                  onClick={handleTestConnection}
+                  disabled={testStatus?.loading || !formData.host}
+                  className="w-full py-2 px-4 bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-200 border border-zinc-700/60 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw size={13} className={testStatus?.loading ? 'animate-spin' : ''} />
+                  {testStatus?.loading ? 'Comprobando dispositivo...' : '🔍 Probar Conexión y Credenciales'}
+                </button>
+              </div>
               
-              <div className="pt-4 flex gap-3">
-                <button type="button" onClick={closeModal} className="flex-1 px-4 py-2 bg-zinc-800 text-zinc-300 rounded-lg font-bold cursor-pointer">Cancelar</button>
-                <button type="submit" disabled={addDeviceMutation.isPending || editDeviceMutation.isPending} className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold disabled:opacity-50 cursor-pointer">
-                  {addDeviceMutation.isPending || editDeviceMutation.isPending ? 'Guardando...' : 'Guardar'}
+              <div className="pt-3 flex gap-3">
+                <button type="button" onClick={closeModal} className="flex-1 px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg font-bold text-sm cursor-pointer transition-all">Cancelar</button>
+                <button 
+                  type="submit" 
+                  disabled={addDeviceMutation.isPending || editDeviceMutation.isPending || testStatus?.loading} 
+                  className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm disabled:opacity-50 cursor-pointer shadow-lg shadow-blue-600/20 transition-all flex items-center justify-center gap-2"
+                >
+                  {(addDeviceMutation.isPending || editDeviceMutation.isPending) && <RefreshCw className="animate-spin" size={15} />}
+                  {addDeviceMutation.isPending || editDeviceMutation.isPending ? 'Verificando y Guardando...' : 'Guardar Dispositivo'}
                 </button>
               </div>
 

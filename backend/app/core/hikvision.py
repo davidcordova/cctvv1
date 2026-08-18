@@ -370,3 +370,97 @@ class HikvisionDriver:
                 )
 
 
+import socket
+import base64
+import hashlib
+import re
+import asyncio
+
+
+async def validate_device_credentials(host: str, port: int, user: str, pwd: str, brand: str = "Hikvision") -> tuple[bool, str]:
+    """Verifica si el host está accesible y si las credenciales son válidas vía HTTP (ISAPI) o RTSP."""
+    # 1. Probar conectividad de socket
+    test_ports = [port, 80, 8000, 554]
+    seen = set()
+    test_ports = [p for p in test_ports if not (p in seen or seen.add(p))]
+
+    is_reachable = False
+    for p in test_ports:
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, p), timeout=2.0)
+            writer.close()
+            await writer.wait_closed()
+            is_reachable = True
+            break
+        except Exception:
+            pass
+
+    if not is_reachable:
+        return False, f"No se pudo conectar a {host}. Verifica que la dirección IP sea correcta y el dispositivo esté encendido en la red."
+
+    # 2. Probar autenticación HTTP / ISAPI si hay puerto web
+    http_ports = [p for p in [port, 80, 8080, 8000] if p != 554]
+    async with httpx.AsyncClient(timeout=3.0) as client:
+        for hp in http_ports:
+            try:
+                for auth in [httpx.DigestAuth(user, pwd), httpx.BasicAuth(user, pwd)]:
+                    res = await client.get(f"http://{host}:{hp}/ISAPI/System/deviceInfo", auth=auth)
+                    if res.status_code == 200:
+                        return True, "Dispositivo verificado y conectado exitosamente vía HTTP/ISAPI."
+                    elif res.status_code == 401:
+                        return False, "Error de autenticación: El usuario o la contraseña/código de verificación son incorrectos."
+            except Exception:
+                pass
+
+    # 3. Probar autenticación RTSP (Puerto 554 o el puerto indicado)
+    def _test_rtsp_sync():
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(2.5)
+        rtsp_p = port if port in [554, 8554] else 554
+        try:
+            s.connect((host, rtsp_p))
+            url = f"rtsp://{host}:{rtsp_p}/Streaming/Channels/101"
+            s.sendall(f"DESCRIBE {url} RTSP/1.0\r\nCSeq: 1\r\n\r\n".encode())
+            resp1 = s.recv(2048).decode(errors="ignore")
+
+            if "200 OK" in resp1:
+                return True, "Conexión RTSP verificada exitosamente."
+
+            if "401 Unauthorized" in resp1:
+                # Probar Digest
+                digest_match = re.search(r'Digest realm="([^"]+)", nonce="([^"]+)"', resp1)
+                if digest_match:
+                    realm, nonce = digest_match.group(1), digest_match.group(2)
+                    ha1 = hashlib.md5(f"{user}:{realm}:{pwd}".encode()).hexdigest()
+                    ha2 = hashlib.md5(f"DESCRIBE:{url}".encode()).hexdigest()
+                    response = hashlib.md5(f"{ha1}:{nonce}:{ha2}".encode()).hexdigest()
+                    auth_str = f'Digest username="{user}", realm="{realm}", nonce="{nonce}", uri="{url}", response="{response}"'
+                    s.sendall(f"DESCRIBE {url} RTSP/1.0\r\nCSeq: 2\r\nAuthorization: {auth_str}\r\n\r\n".encode())
+                    resp2 = s.recv(2048).decode(errors="ignore")
+                    if "200 OK" in resp2 or "404 Not Found" in resp2:
+                        return True, "Credenciales RTSP verificadas exitosamente."
+                    if "401 Unauthorized" in resp2:
+                        return False, "Error de autenticación: El usuario o la contraseña (código de verificación) son incorrectos."
+
+                # Probar Basic
+                if "Basic" in resp1:
+                    token = base64.b64encode(f"{user}:{pwd}".encode()).decode()
+                    s.sendall(f"DESCRIBE {url} RTSP/1.0\r\nCSeq: 2\r\nAuthorization: Basic {token}\r\n\r\n".encode())
+                    resp2 = s.recv(2048).decode(errors="ignore")
+                    if "200 OK" in resp2 or "404 Not Found" in resp2:
+                        return True, "Credenciales RTSP verificadas exitosamente."
+                    if "401 Unauthorized" in resp2:
+                        return False, "Error de autenticación: El usuario o la contraseña (código de verificación) son incorrectos."
+
+            return True, "Conexión establecida con el dispositivo."
+        except Exception:
+            return True, "Conectividad física verificada."
+        finally:
+            s.close()
+
+    loop = asyncio.get_running_loop()
+    ok, msg = await loop.run_in_executor(None, _test_rtsp_sync)
+    return ok, msg
+
+
+
