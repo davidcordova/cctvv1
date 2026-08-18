@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CCTV Video Player</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000000;
+    }
+    video-stream, video-rtc {
+      width: 100% !important;
+      height: 100% !important;
+      display: block !important;
+      position: absolute !important;
+      inset: 0 !important;
+      background: #000000 !important;
+    }
+    video-stream video, video-rtc video {
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: contain !important;
+      background: #000000 !important;
+    }
+    .fit-cover video {
+      object-fit: cover !important;
+    }
+    /* Ocultar textos y banners de error internos de go2rtc */
+    .info, .status, .mode {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+  <script type="module">
+    const params = new URLSearchParams(location.search);
+    const src = params.get('src') || '';
+    const isMuted = params.get('muted') !== '0';
+    const fit = params.get('fit') || 'contain';
+    const host = window.location.hostname || 'localhost';
+
+    // Cargar VideoRTC desde el servidor go2rtc local
+    import(`http://${host}:1984/video-rtc.js`).then(({ VideoRTC }) => {
+      if (!customElements.get('video-rtc')) {
+        customElements.define('video-rtc', VideoRTC);
+      }
+      
+      const rtc = document.createElement('video-rtc');
+      if (fit === 'cover') {
+        rtc.classList.add('fit-cover');
+      }
+      
+      // Control estricto de audio: si está silenciado, solo pedir video
+      rtc.media = isMuted ? 'video' : 'video,audio';
+      rtc.mode = 'webrtc,mse,mp4,mjpeg';
+      rtc.background = true;
+      rtc.src = `ws://${host}:1984/api/ws?src=${encodeURIComponent(src)}`;
+      
+      document.body.appendChild(rtc);
+
+      // Aplicar muting nativo al elemento video
+      const enforceMute = () => {
+        if (rtc.video) {
+          rtc.video.muted = isMuted;
+          rtc.video.volume = isMuted ? 0 : 1;
+          rtc.video.playsInline = true;
+          rtc.video.play().catch(() => {});
+        }
+      };
+      
+      setTimeout(enforceMute, 20);
+      setTimeout(enforceMute, 150);
+      setTimeout(enforceMute, 500);
+    }).catch(err => {
+      console.warn("Fallback direct video-stream", err);
+      // Fallback a iframe directo si no carga módulo
+      location.href = `http://${host}:1984/stream.html?src=${encodeURIComponent(src)}&mode=webrtc,mse,mp4,mjpeg`;
+    });
+  </script>
+</body>
+</html>

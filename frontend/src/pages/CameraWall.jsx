@@ -101,7 +101,7 @@ const CameraCard = ({
         {useWebRTC ? (
           <iframe 
             key={`wall-stream-${camera.id}-${refreshKey}-${cardLocalKey}-${isAudioActive ? 'audio' : 'mute'}`}
-            src={`http://${window.location.hostname}:1984/stream.html?src=camera_${camera.id}&mode=webrtc,mse,mp4,mjpeg&media=${isAudioActive ? 'video,audio' : 'video'}&muted=${isAudioActive ? '0' : '1'}`} 
+            src={`/player.html?src=camera_${camera.id}&muted=${isAudioActive ? '0' : '1'}`} 
             title={camera.name}
             className="absolute inset-0 w-full h-full border-0 pointer-events-none"
             scrolling="no"
@@ -1202,8 +1202,8 @@ const CameraWall = () => {
               <div className="w-full h-full max-w-full max-h-full flex items-center justify-center relative bg-black">
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' ? (
                   <iframe 
-                    key={`modal-stream-${zoomedCamera.id}-${modalStreamKey}-${modalAudioEnabled ? 'audio' : 'mute'}`}
-                    src={`http://${window.location.hostname}:1984/stream.html?src=camera_${zoomedCamera.id}_hd&mode=webrtc,mse,mp4,mjpeg&media=${modalAudioEnabled ? 'video,audio' : 'video'}&muted=${modalAudioEnabled ? '0' : '1'}`} 
+                    key={`modal-stream-${zoomedCamera.id}-${modalStreamKey}-${modalAudioEnabled ? 'audio' : 'mute'}-${videoFit}`}
+                    src={`/player.html?src=camera_${zoomedCamera.id}_hd&muted=${modalAudioEnabled ? '0' : '1'}&fit=${videoFit}`} 
                     title={zoomedCamera.name}
                     className="w-full h-full max-h-full max-w-full border-0 z-10"
                     scrolling="no"

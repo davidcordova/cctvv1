@@ -63,7 +63,9 @@ def sync_go2rtc_config():
                         main_url = f"{main_url}#backchannel=0"
 
                     device = devices_by_id.get(camera.device_id)
-                    if device and device.password:
+                    # Para grabadores multicanal (> 2 canales), generar substream para ahorrar ancho de banda
+                    # Para cámaras IP independientes (1 o 2 canales), usar el flujo principal garantizado
+                    if device and device.password and (device.channel_count or 1) > 2:
                         sub_url = generate_substream_url(
                             device.host,
                             device.username,
