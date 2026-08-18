@@ -60,7 +60,7 @@ def sync_go2rtc_config():
                 if camera.rtsp_url:
                     main_url = camera.rtsp_url
                     if "#" not in main_url:
-                        main_url = f"{main_url}#backchannel=0#transport=tcp"
+                        main_url = f"{main_url}#backchannel=0"
 
                     device = devices_by_id.get(camera.device_id)
                     if device and device.password:
@@ -72,11 +72,9 @@ def sync_go2rtc_config():
                             device.brand
                         )
                         if "#" not in sub_url:
-                            sub_url = f"{sub_url}#backchannel=0#transport=tcp"
+                            sub_url = f"{sub_url}#backchannel=0"
                         
-                        # camera_{id} usa substream con fallback a main_url (fluidez extrema para el muro)
-                        streams[f"camera_{camera.id}"] = [sub_url, main_url]
-                        # camera_{id}_hd usa el flujo principal (para ampliación / zoom / inspección detallada)
+                        streams[f"camera_{camera.id}"] = sub_url
                         streams[f"camera_{camera.id}_hd"] = main_url
                     else:
                         streams[f"camera_{camera.id}"] = main_url
