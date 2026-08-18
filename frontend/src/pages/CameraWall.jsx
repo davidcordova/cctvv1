@@ -1167,7 +1167,7 @@ const CameraWall = () => {
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' ? (
                   <iframe 
                     key={`modal-stream-${zoomedCamera.id}-${modalStreamKey}`}
-                    src={`http://${window.location.hostname}:1984/stream.html?src=camera_${zoomedCamera.id}&mode=webrtc,mse,mp4,mjpeg`} 
+                    src={`http://${window.location.hostname}:1984/stream.html?src=camera_${zoomedCamera.id}_hd&mode=webrtc,mse,mp4,mjpeg`} 
                     title={zoomedCamera.name}
                     className="w-full h-full max-h-full max-w-full border-0 z-10"
                     scrolling="no"

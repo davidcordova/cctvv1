@@ -27,6 +27,25 @@ def get_go2rtc_paths():
     return binary_path, config_path
 
 import httpx
+import socket
+from app.models.models import Device
+from app.core.hikvision import generate_substream_url
+
+
+def get_local_ip_candidates():
+    """Descubre las direcciones IP locales IPv4 del servidor para acelerar la negociación WebRTC LAN."""
+    candidates = ["stun:8555"]
+    try:
+        hostname = socket.gethostname()
+        addrs = socket.getaddrinfo(hostname, None)
+        for addr in addrs:
+            ip = addr[4][0]
+            if ":" not in ip and not ip.startswith("127.") and not ip.startswith("169.254."):
+                candidates.append(f"{ip}:8555")
+    except Exception:
+        pass
+    return list(dict.fromkeys(candidates))
+
 
 def sync_go2rtc_config():
     try:
@@ -34,10 +53,37 @@ def sync_go2rtc_config():
         streams = {}
         with Session(engine) as session:
             cameras = session.exec(select(Camera).where(Camera.is_active == True)).all()
+            # Mapear dispositivos en memoria para optimizar consultas
+            devices_by_id = {d.id: d for d in session.exec(select(Device)).all()}
+
             for camera in cameras:
                 if camera.rtsp_url:
-                    streams[f"camera_{camera.id}"] = camera.rtsp_url
+                    main_url = camera.rtsp_url
+                    if "#" not in main_url:
+                        main_url = f"{main_url}#backchannel=0#transport=tcp"
+
+                    device = devices_by_id.get(camera.device_id)
+                    if device and device.password:
+                        sub_url = generate_substream_url(
+                            device.host,
+                            device.username,
+                            device.password,
+                            camera.channel,
+                            device.brand
+                        )
+                        if "#" not in sub_url:
+                            sub_url = f"{sub_url}#backchannel=0#transport=tcp"
+                        
+                        # camera_{id} usa substream con fallback a main_url (fluidez extrema para el muro)
+                        streams[f"camera_{camera.id}"] = [sub_url, main_url]
+                        # camera_{id}_hd usa el flujo principal (para ampliación / zoom / inspección detallada)
+                        streams[f"camera_{camera.id}_hd"] = main_url
+                    else:
+                        streams[f"camera_{camera.id}"] = main_url
+                        streams[f"camera_{camera.id}_hd"] = main_url
         
+        candidates = get_local_ip_candidates()
+
         config = {
             "api": {
                 "listen": ":1984"
@@ -46,21 +92,26 @@ def sync_go2rtc_config():
                 "listen": ":8554"
             },
             "webrtc": {
-                "listen": ":8555"
+                "listen": ":8555",
+                "candidates": candidates
             },
             "streams": streams
         }
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(config, f, default_flow_style=False)
-        print(f"go2rtc config synced with {len(streams)} active streams to {config_path}.")
+        print(f"go2rtc config synced with {len(streams)} active streams and LAN candidates {candidates} to {config_path}.")
 
         # Notificar y registrar streams dinámicamente en go2rtc si ya se encuentra en ejecución
         try:
             with httpx.Client(timeout=3.0) as client:
                 res = client.get("http://localhost:1984/api/streams")
                 if res.status_code == 200:
-                    for src_name, rtsp_url in streams.items():
-                        client.put("http://localhost:1984/api/streams", params={"src": rtsp_url, "name": src_name})
+                    for src_name, rtsp_entry in streams.items():
+                        if isinstance(rtsp_entry, list):
+                            for s in rtsp_entry:
+                                client.put("http://localhost:1984/api/streams", params={"src": s, "name": src_name})
+                        else:
+                            client.put("http://localhost:1984/api/streams", params={"src": rtsp_entry, "name": src_name})
         except Exception as e:
             print(f"Notice: could not dynamically update go2rtc via API: {e}")
 

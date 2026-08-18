@@ -6,7 +6,7 @@ from app.models.models import Device, Brand
 
 
 def generate_rtsp_url(host: str, username: str, password: str, channel_id: int, brand: str) -> str:
-    """Genera la URL RTSP correspondiente a la marca del dispositivo y número de canal."""
+    """Genera la URL RTSP correspondiente a la marca del dispositivo y número de canal (Flujo Principal / HD)."""
     encoded_user = urllib.parse.quote(username, safe="")
     encoded_pass = urllib.parse.quote(password, safe="")
 
@@ -22,6 +22,26 @@ def generate_rtsp_url(host: str, username: str, password: str, channel_id: int, 
         chan_str = str(channel_id)
         if not chan_str.endswith("01") and channel_id < 100:
             chan_str = f"{channel_id}01"
+        return f"rtsp://{encoded_user}:{encoded_pass}@{host}:554/Streaming/Channels/{chan_str}"
+
+
+def generate_substream_url(host: str, username: str, password: str, channel_id: int, brand: str) -> str:
+    """Genera la URL RTSP de flujo secundario (Sub-Stream / Fluido) para cuadrículas multicámara."""
+    encoded_user = urllib.parse.quote(username, safe="")
+    encoded_pass = urllib.parse.quote(password, safe="")
+
+    brand_str = str(brand).lower()
+    if "dahua" in brand_str:
+        # Formato Dahua: /cam/realmonitor?channel=1&subtype=1
+        chan_num = channel_id
+        if chan_num >= 100:
+            chan_num = chan_num // 100
+        return f"rtsp://{encoded_user}:{encoded_pass}@{host}:554/cam/realmonitor?channel={chan_num}&subtype=1"
+    else:
+        # Formato Hikvision / Ezviz / HiLook / Uniview / Genérico: /Streaming/Channels/102
+        chan_str = str(channel_id)
+        if not chan_str.endswith("02") and channel_id < 100:
+            chan_str = f"{channel_id}02"
         return f"rtsp://{encoded_user}:{encoded_pass}@{host}:554/Streaming/Channels/{chan_str}"
 
 
