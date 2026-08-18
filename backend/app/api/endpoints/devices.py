@@ -22,6 +22,7 @@ def scan_network(
 async def test_device_connection(
     *,
     payload: dict,
+    session: Session = Depends(get_session),
     current_user: User = Depends(require_admin)
 ) -> Any:
     host = payload.get("host", "").strip()
@@ -29,6 +30,12 @@ async def test_device_connection(
     username = payload.get("username", "admin").strip()
     password = payload.get("password", "")
     brand = payload.get("brand", "Hikvision")
+    device_id = payload.get("device_id") or payload.get("id")
+
+    if not password and device_id:
+        existing = session.get(Device, device_id)
+        if existing:
+            password = existing.password
 
     if not host:
         raise HTTPException(status_code=400, detail="Debe ingresar una dirección IP / Host.")
@@ -177,7 +184,6 @@ async def update_device(
         raise HTTPException(status_code=404, detail="Device not found")
     
     old_name = device.name
-    old_channel_count = device.channel_count or 8
     credentials_changed = any(
         getattr(device_in, key) is not None and getattr(device_in, key) != "" and getattr(device_in, key) != getattr(device, key)
         for key in ["host", "port", "username", "password", "brand"]
@@ -214,10 +220,39 @@ async def update_device(
                 camera.name = " - ".join(parts)
                 session.add(camera)
 
-    # If credentials or brand changed, update RTSP URLs correctly
+    # Sincronizar cámaras del dispositivo según nuevo channel_count
+    new_channel_count = device.channel_count or 1
+    current_cameras = session.exec(select(Camera).where(Camera.device_id == device_id)).all()
+
+    # 1. Si se redujo el número de canales, eliminar los canales sobrantes
+    for cam in current_cameras:
+        if cam.channel > new_channel_count:
+            if cam.id is not None:
+                from app.models.models import UserCameraLink
+                links = session.exec(select(UserCameraLink).where(UserCameraLink.camera_id == cam.id)).all()
+                for link in links:
+                    session.delete(link)
+            session.delete(cam)
+
+    # 2. Si se incrementó el número de canales, crear los faltantes
+    existing_channels = {c.channel for c in current_cameras if c.channel <= new_channel_count}
+    for ch in range(1, new_channel_count + 1):
+        if ch not in existing_channels:
+            rtsp = generate_rtsp_url(device.host, device.username, device.password, ch, device.brand)
+            new_cam = Camera(
+                name=f"Cámara {ch} - {device.name}",
+                channel=ch,
+                device_id=device.id,
+                rtsp_url=rtsp
+            )
+            session.add(new_cam)
+
+    # 3. Si cambiaron credenciales o marca, refrescar RTSP URLs en las cámaras activas restantes
     if credentials_changed:
-        cameras = session.exec(select(Camera).where(Camera.device_id == device_id)).all()
-        for camera in cameras:
+        remaining_cameras = session.exec(
+            select(Camera).where(Camera.device_id == device_id, Camera.channel <= new_channel_count)
+        ).all()
+        for camera in remaining_cameras:
             camera.rtsp_url = generate_rtsp_url(
                 host=device.host,
                 username=device.username,
@@ -226,21 +261,6 @@ async def update_device(
                 brand=device.brand
             )
             session.add(camera)
-
-    # If channel count increased, create missing cameras
-    new_channel_count = device.channel_count or 8
-    if new_channel_count > old_channel_count:
-        existing_channels = {c.channel for c in session.exec(select(Camera).where(Camera.device_id == device_id)).all()}
-        for ch in range(1, new_channel_count + 1):
-            if ch not in existing_channels:
-                rtsp = generate_rtsp_url(device.host, device.username, device.password, ch, device.brand)
-                new_cam = Camera(
-                    name=f"Cámara {ch} - {device.name}",
-                    channel=ch,
-                    device_id=device.id,
-                    rtsp_url=rtsp
-                )
-                session.add(new_cam)
             
     session.commit()
     session.refresh(device)

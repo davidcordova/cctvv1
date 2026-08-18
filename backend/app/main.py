@@ -146,6 +146,25 @@ async def lifespan(app: FastAPI):
                 session.add(admin_user)
                 session.commit()
                 print("Default admin user created (admin/admin)")
+
+            # Limpieza automática de canales huérfanos / excedentes
+            from app.models.models import Camera, UserCameraLink
+            all_devices = session.exec(select(Device)).all()
+            cleaned = False
+            for dev in all_devices:
+                max_ch = dev.channel_count or 1
+                excess = session.exec(select(Camera).where(Camera.device_id == dev.id, Camera.channel > max_ch)).all()
+                for c in excess:
+                    if c.id:
+                        links = session.exec(select(UserCameraLink).where(UserCameraLink.camera_id == c.id)).all()
+                        for l in links:
+                            session.delete(l)
+                    session.delete(c)
+                    cleaned = True
+            if cleaned:
+                session.commit()
+                print("Canales excedentes purgados correctamente.")
+
         monitor_task = asyncio.create_task(monitor_devices_loop())
     except Exception as e:
         print(f"Error creating database tables or admin user: {e}")

@@ -140,7 +140,11 @@ const DeviceMgmt = () => {
     }
     setTestStatus({ loading: true });
     try {
-      const res = await api.post('/devices/test-connection', formData);
+      const payload = {
+        ...formData,
+        device_id: editingDevice?.id
+      };
+      const res = await api.post('/devices/test-connection', payload);
       setTestStatus({
         loading: false,
         success: res.data.success,
