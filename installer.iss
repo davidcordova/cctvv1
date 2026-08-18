@@ -42,6 +42,8 @@ Source: "dist\cctv_backend\*"; DestDir: "{app}"; Flags: ignoreversion recursesub
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
+Name: "{group}\Iniciar Servidor Silencioso (Segundo Plano)"; Filename: "{app}\Iniciar_Servidor_Segundo_Plano.bat"; WorkingDir: "{app}"
+Name: "{group}\Instalar Arranque Automatico con Windows"; Filename: "{app}\Instalar_Arranque_Automatico_Windows.bat"; WorkingDir: "{app}"
 Name: "{group}\Detener CCTV"; Filename: "{app}\Detener_CCTV.bat"; WorkingDir: "{app}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon

@@ -219,16 +219,18 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
-    # Abrir navegador automáticamente tras iniciar
-    def open_browser():
-        import time
-        time.sleep(1.5)
-        webbrowser.open("http://localhost:8500")
+    # Abrir navegador automáticamente tras iniciar sólo si no está en modo headless/servicio
+    no_browser = "--no-browser" in sys.argv or os.environ.get("CCTV_NO_BROWSER") == "1"
+    if not no_browser:
+        def open_browser():
+            import time
+            time.sleep(1.5)
+            webbrowser.open("http://localhost:8500")
 
-    import threading
-    threading.Thread(target=open_browser, daemon=True).start()
+        import threading
+        threading.Thread(target=open_browser, daemon=True).start()
 
-    print("Iniciando Servidor CCTV en http://localhost:8500...")
+    print("Iniciando Servidor CCTV en http://0.0.0.0:8500...")
     uvicorn.run("app.main:app" if not getattr(sys, 'frozen', False) else app, host="0.0.0.0", port=8500, log_level="info")
 
 

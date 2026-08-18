@@ -83,9 +83,52 @@ def main():
         f.write('echo Procesos finalizados con exito.\n')
         f.write('timeout /t 2 >nul\n')
 
+    # Lanzador Silencioso (Headless - Sin Navegador)
+    silencioso_bat = os.path.join(OUTPUT_DIR, "Iniciar_Servidor_Segundo_Plano.bat")
+    with open(silencioso_bat, "w", encoding="utf-8") as f:
+        f.write('@echo off\n')
+        f.write('title Sistema CCTV - Modo Servidor Silencioso\n')
+        f.write('cd /d "%~dp0"\n')
+        f.write('echo ========================================================\n')
+        f.write('echo     SISTEMA CCTV - MODO SERVIDOR DEDICADO\n')
+        f.write('echo ========================================================\n')
+        f.write('echo Iniciando en segundo plano (sin abrir navegador)...\n')
+        f.write('taskkill /F /IM cctv_backend.exe /T 2>nul\n')
+        f.write('taskkill /F /IM go2rtc.exe /T 2>nul\n')
+        f.write('start "" "%~dp0cctv_backend.exe" --no-browser\n')
+        f.write('echo Servidor activo. Los clientes pueden conectarse via web.\n')
+        f.write('timeout /t 3 >nul\n')
+
+    # Script para registrar arranque automático en Windows al encender la máquina
+    autostart_bat = os.path.join(OUTPUT_DIR, "Instalar_Arranque_Automatico_Windows.bat")
+    with open(autostart_bat, "w", encoding="utf-8") as f:
+        f.write('@echo off\n')
+        f.write('title Configurar Arranque Automatico CCTV con Windows\n')
+        f.write('cd /d "%~dp0"\n')
+        f.write('echo ========================================================\n')
+        f.write('echo    CONFIGURAR INICIO AUTOMATICO (SERVICIO 24/7)\n')
+        f.write('echo ========================================================\n')
+        f.write('echo Registrando tarea del sistema para arrancar sin iniciar sesion...\n')
+        f.write('schtasks /create /tn "SistemaCCTV_AutoStart" /tr "\\"%~dp0cctv_backend.exe\\" --no-browser" /sc onstart /ru SYSTEM /f\n')
+        f.write('echo.\n')
+        f.write('echo [OK] El Sistema CCTV ahora arrancara automaticamente con Windows\n')
+        f.write('echo      sin necesidad de abrir sesión ni ventanas de navegador.\n')
+        f.write('pause\n')
+
+    remove_autostart_bat = os.path.join(OUTPUT_DIR, "Desinstalar_Arranque_Automatico.bat")
+    with open(remove_autostart_bat, "w", encoding="utf-8") as f:
+        f.write('@echo off\n')
+        f.write('title Desinstalar Arranque Automatico CCTV\n')
+        f.write('schtasks /delete /tn "SistemaCCTV_AutoStart" /f\n')
+        f.write('echo [OK] Arranque automatico desinstalado.\n')
+        f.write('pause\n')
+
     # También crear lanzadores en la raíz del dist
     shutil.copy2(iniciar_bat, os.path.join(DIST_DIR, "Iniciar_CCTV.bat"))
     shutil.copy2(detener_bat, os.path.join(DIST_DIR, "Detener_CCTV.bat"))
+    shutil.copy2(silencioso_bat, os.path.join(DIST_DIR, "Iniciar_Servidor_Segundo_Plano.bat"))
+    shutil.copy2(autostart_bat, os.path.join(DIST_DIR, "Instalar_Arranque_Automatico_Windows.bat"))
+    shutil.copy2(remove_autostart_bat, os.path.join(DIST_DIR, "Desinstalar_Arranque_Automatico.bat"))
 
     log("Step 6: Buscando Inno Setup Compiler para generar el instalador .exe...")
     inno_paths = [
