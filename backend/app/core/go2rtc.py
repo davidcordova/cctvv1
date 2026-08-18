@@ -87,7 +87,8 @@ def sync_go2rtc_config():
                 "listen": ":1984"
             },
             "rtsp": {
-                "listen": ":8554"
+                "listen": ":8554",
+                "default_query": "backchannel=0"
             },
             "webrtc": {
                 "listen": ":8555",

@@ -77,17 +77,17 @@ async def get_camera_snapshot(
     camera_id: int
 ) -> Any:
     # 1. Obtener cámara y dispositivo cerrando la sesión de BD de inmediato
+    device_copy = None
+    channel_num = 1
     with Session(engine) as session:
         camera = session.get(Camera, camera_id)
         if not camera or not camera.is_active:
             return Response(status_code=404)
         
-        device = session.get(Device, camera.device_id)
-        if not device or not device.is_online:
-            return Response(status_code=404)
-        
-        device_copy = Device(**device.model_dump())
         channel_num = camera.channel
+        device = session.get(Device, camera.device_id)
+        if device:
+            device_copy = Device(**device.model_dump())
         
     now = time.time()
     _prune_snapshot_cache(now)
@@ -113,7 +113,7 @@ async def get_camera_snapshot(
     try:
         image_data = await task
         return Response(content=image_data, media_type="image/jpeg")
-    except Exception as e:
+    except Exception:
         # Fallback a caché anterior si existe
         if camera_id in SNAPSHOT_CACHE:
             _, cached_data = SNAPSHOT_CACHE[camera_id]
@@ -157,7 +157,7 @@ def update_camera(
 async def get_webrtc_status():
     try:
         async with httpx.AsyncClient() as client:
-            res = await client.get("http://localhost:1984/api/streams", timeout=1.0)
+            res = await client.get("http://localhost:1984/api/streams", timeout=3.0)
             return {"available": res.status_code == 200}
     except Exception:
         return {"available": False}

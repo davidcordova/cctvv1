@@ -270,7 +270,7 @@ const CameraWall = () => {
   const [videoFit, setVideoFit] = useState('contain');
   const [streamMode, setStreamMode] = useState('webrtc');
   const [autoRefreshSec, setAutoRefreshSec] = useState(5);
-  const [isWebRTCAvailable, setIsWebRTCAvailable] = useState(false);
+  const [isWebRTCAvailable, setIsWebRTCAvailable] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -291,12 +291,11 @@ const CameraWall = () => {
     const checkWebRTC = async () => {
       try {
         const res = await api.get('/cameras/webrtc-status');
-        if (res.data && res.data.available) {
-          setIsWebRTCAvailable(true);
-          setStreamMode('webrtc');
+        if (res.data) {
+          setIsWebRTCAvailable(Boolean(res.data.available));
         }
       } catch (e) {
-        setIsWebRTCAvailable(false);
+        // En caso de fallo transitorio, mantener activo para reintentar
       }
     };
     checkWebRTC();
