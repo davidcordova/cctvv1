@@ -101,7 +101,7 @@ const CameraCard = ({
         {useWebRTC ? (
           <iframe 
             key={`wall-stream-${camera.id}-${refreshKey}-${cardLocalKey}-${isAudioActive ? 'audio' : 'mute'}`}
-            src={`/player.html?src=camera_${camera.id}&muted=${isAudioActive ? '0' : '1'}`} 
+            src={`http://${window.location.hostname}:1984/stream.html?src=camera_${camera.id}&mode=webrtc,mse,mp4,mjpeg&media=${isAudioActive ? 'video,audio' : 'video'}`} 
             title={camera.name}
             className="absolute inset-0 w-full h-full border-0 pointer-events-none"
             scrolling="no"
@@ -491,14 +491,66 @@ const CameraWall = () => {
     return () => clearInterval(interval);
   }, [autoRefreshSec, streamMode]);
 
-  const toggleFullScreen = () => {
-    const elem = document.getElementById('camera-wall-container');
-    if (!document.fullscreenElement) {
-      if (elem?.requestFullscreen) elem.requestFullscreen();
-      setIsWallFullscreen(true);
-    } else {
-      if (document.exitFullscreen) document.exitFullscreen();
-      setIsWallFullscreen(false);
+  // Sincronizar estado con el evento nativo de pantalla completa del navegador
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      const isFs = Boolean(
+        document.fullscreenElement ||
+        document.webkitFullscreenElement ||
+        document.mozFullScreenElement ||
+        document.msFullscreenElement
+      );
+      setIsWallFullscreen(isFs);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullScreen = async () => {
+    try {
+      const isFs = Boolean(
+        document.fullscreenElement ||
+        document.webkitFullscreenElement ||
+        document.mozFullScreenElement ||
+        document.msFullscreenElement
+      );
+
+      if (!isFs) {
+        const docEl = document.documentElement;
+        if (docEl.requestFullscreen) {
+          await docEl.requestFullscreen();
+        } else if (docEl.webkitRequestFullscreen) {
+          await docEl.webkitRequestFullscreen();
+        } else if (docEl.mozRequestFullScreen) {
+          await docEl.mozRequestFullScreen();
+        } else if (docEl.msRequestFullscreen) {
+          await docEl.msRequestFullscreen();
+        }
+      } else {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+          await document.webkitExitFullscreen();
+        } else if (document.mozCancelFullScreen) {
+          await document.mozCancelFullScreen();
+        } else if (document.msExitFullscreen) {
+          await document.msExitFullscreen();
+        }
+      }
+    } catch (err) {
+      console.warn("Fullscreen toggle error:", err);
+      // En caso de bloqueo de permisos del navegador, alternar modo CSS
+      setIsWallFullscreen(prev => !prev);
     }
   };
 
@@ -717,10 +769,11 @@ const CameraWall = () => {
         </div>
       )}
 
-      {/* Fullscreen container containing the grid and exit button */}
       <div 
         id="camera-wall-container" 
-        className="flex-1 flex flex-col bg-zinc-950 relative overflow-hidden"
+        className={isWallFullscreen 
+          ? "fixed inset-0 z-[9999] w-screen h-screen bg-zinc-950 flex flex-col overflow-hidden" 
+          : "flex-1 flex flex-col bg-zinc-950 relative overflow-hidden"}
       >
         {isWallFullscreen && (
           <button
@@ -1203,7 +1256,7 @@ const CameraWall = () => {
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' ? (
                   <iframe 
                     key={`modal-stream-${zoomedCamera.id}-${modalStreamKey}-${modalAudioEnabled ? 'audio' : 'mute'}-${videoFit}`}
-                    src={`/player.html?src=camera_${zoomedCamera.id}&muted=${modalAudioEnabled ? '0' : '1'}&fit=${videoFit}`} 
+                    src={`http://${window.location.hostname}:1984/stream.html?src=camera_${zoomedCamera.id}&mode=webrtc,mse,mp4,mjpeg&media=${modalAudioEnabled ? 'video,audio' : 'video'}`} 
                     title={zoomedCamera.name}
                     className="w-full h-full max-h-full max-w-full border-0 z-10"
                     scrolling="no"

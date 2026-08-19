@@ -60,9 +60,7 @@ def sync_go2rtc_config():
                 if camera.rtsp_url:
                     main_url = camera.rtsp_url
                     if "#" not in main_url:
-                        main_url = f"{main_url}#backchannel=0#transport=tcp"
-                    elif "transport=tcp" not in main_url:
-                        main_url = f"{main_url}#transport=tcp"
+                        pass # No longer appending #backchannel=0
 
                     device = devices_by_id.get(camera.device_id)
                     # Para grabadores multicanal (> 2 canales), generar substream para ahorrar ancho de banda
@@ -76,9 +74,7 @@ def sync_go2rtc_config():
                             device.brand
                         )
                         if "#" not in sub_url:
-                            sub_url = f"{sub_url}#backchannel=0#transport=tcp"
-                        elif "transport=tcp" not in sub_url:
-                            sub_url = f"{sub_url}#transport=tcp"
+                            pass # No longer appending #backchannel=0
                         
                         streams[f"camera_{camera.id}"] = sub_url
                         streams[f"camera_{camera.id}_hd"] = main_url
@@ -94,8 +90,7 @@ def sync_go2rtc_config():
                 "origin": "*"
             },
             "rtsp": {
-                "listen": ":8554",
-                "default_query": "backchannel=0#transport=tcp"
+                "listen": ":8554"
             },
             "webrtc": {
                 "listen": ":8555",
@@ -129,14 +124,15 @@ WATCHDOG_THREAD = None
 
 def _watchdog_loop(binary_path, config_path):
     global GO2RTC_PROC, GO2RTC_WATCHDOG_RUNNING
+    log_path = os.path.join(os.path.dirname(binary_path), "go2rtc.log")
     while GO2RTC_WATCHDOG_RUNNING:
         if GO2RTC_PROC is None or GO2RTC_PROC.poll() is not None:
             print("go2rtc process not running, restarting...")
             try:
                 GO2RTC_PROC = subprocess.Popen(
                     [binary_path, "-config", config_path],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    stdout=open(log_path, "a"),
+                    stderr=subprocess.STDOUT,
                     cwd=os.path.dirname(binary_path)
                 )
                 print("go2rtc restarted by watchdog!")
@@ -152,13 +148,14 @@ def start_go2rtc():
         return
         
     sync_go2rtc_config()
+    log_path = os.path.join(os.path.dirname(binary_path), "go2rtc.log")
     
     print("Starting go2rtc process...")
     try:
         GO2RTC_PROC = subprocess.Popen(
             [binary_path, "-config", config_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=open(log_path, "w"),
+            stderr=subprocess.STDOUT,
             cwd=os.path.dirname(binary_path)
         )
         print("go2rtc started successfully!")
