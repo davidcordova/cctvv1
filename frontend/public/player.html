@@ -29,9 +29,12 @@
     .fit-cover video {
       object-fit: cover !important;
     }
-    /* Ocultar textos y banners de error internos de go2rtc */
-    .info, .status, .mode {
+    /* Ocultar completamente textos, códigos y banners de error internos de go2rtc */
+    .info, .status, .mode, div.info, div.status, div.mode {
       display: none !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
     }
   </style>
 </head>
@@ -75,9 +78,15 @@
       setTimeout(enforceMute, 20);
       setTimeout(enforceMute, 150);
       setTimeout(enforceMute, 500);
+
+      // Auto-reintento suave si la cámara corta la conexión temporalmente
+      setInterval(() => {
+        if (rtc && rtc.wsState === WebSocket.CLOSED && rtc.pcState === WebSocket.CLOSED) {
+          try { rtc.onconnect(); } catch (e) {}
+        }
+      }, 6000);
     }).catch(err => {
       console.warn("Fallback direct video-stream", err);
-      // Fallback a iframe directo si no carga módulo
       location.href = `http://${host}:1984/stream.html?src=${encodeURIComponent(src)}&mode=webrtc,mse,mp4,mjpeg`;
     });
   </script>
