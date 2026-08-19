@@ -60,7 +60,9 @@ def sync_go2rtc_config():
                 if camera.rtsp_url:
                     main_url = camera.rtsp_url
                     if "#" not in main_url:
-                        main_url = f"{main_url}#backchannel=0"
+                        main_url = f"{main_url}#backchannel=0#transport=tcp"
+                    elif "transport=tcp" not in main_url:
+                        main_url = f"{main_url}#transport=tcp"
 
                     device = devices_by_id.get(camera.device_id)
                     # Para grabadores multicanal (> 2 canales), generar substream para ahorrar ancho de banda
@@ -74,7 +76,9 @@ def sync_go2rtc_config():
                             device.brand
                         )
                         if "#" not in sub_url:
-                            sub_url = f"{sub_url}#backchannel=0"
+                            sub_url = f"{sub_url}#backchannel=0#transport=tcp"
+                        elif "transport=tcp" not in sub_url:
+                            sub_url = f"{sub_url}#transport=tcp"
                         
                         streams[f"camera_{camera.id}"] = sub_url
                         streams[f"camera_{camera.id}_hd"] = main_url

@@ -40,66 +40,65 @@
 </head>
 <body>
   <script type="module">
+    import { VideoRTC } from './video-rtc.js';
+
+    if (!customElements.get('video-rtc')) {
+      customElements.define('video-rtc', VideoRTC);
+    }
+
     const params = new URLSearchParams(location.search);
     const src = params.get('src') || '';
     const isMuted = params.get('muted') !== '0';
     const fit = params.get('fit') || 'contain';
     const host = window.location.hostname || 'localhost';
 
-    // Cargar VideoRTC desde el servidor go2rtc local
-    import(`http://${host}:1984/video-rtc.js`).then(({ VideoRTC }) => {
-      if (!customElements.get('video-rtc')) {
-        customElements.define('video-rtc', VideoRTC);
-      }
-      
-      const rtc = document.createElement('video-rtc');
-      if (fit === 'cover') {
-        rtc.classList.add('fit-cover');
-      }
-      
-      // Control estricto de audio: si está silenciado, solo pedir pista de video a go2rtc
-      const mediaMode = isMuted ? 'video' : 'video,audio';
-      rtc.media = mediaMode;
-      rtc.mode = 'webrtc,mse,mp4,mjpeg';
-      rtc.background = true;
-      rtc.src = `ws://${host}:1984/api/ws?src=${encodeURIComponent(src)}&media=${encodeURIComponent(mediaMode)}`;
-      
-      document.body.appendChild(rtc);
+    const rtc = document.createElement('video-rtc');
+    if (fit === 'cover') {
+      rtc.classList.add('fit-cover');
+    }
+    
+    // Control estricto de pistas: si está silenciado, solo pedir video
+    const mediaMode = isMuted ? 'video' : 'video,audio';
+    rtc.media = mediaMode;
+    rtc.mode = 'webrtc,mse,mp4,mjpeg';
+    rtc.background = true;
+    rtc.src = `ws://${host}:1984/api/ws?src=${encodeURIComponent(src)}`;
+    
+    document.body.appendChild(rtc);
 
-      // Aplicar muting nativo estricto e irrevocable al elemento video si isMuted es true
-      const enforceMute = () => {
-        if (rtc.video) {
-          rtc.video.muted = isMuted;
-          rtc.video.volume = isMuted ? 0 : 1;
-          rtc.video.playsInline = true;
-          
-          if (isMuted) {
-            rtc.video.onvolumechange = () => {
-              if (!rtc.video.muted || rtc.video.volume > 0) {
-                rtc.video.muted = true;
-                rtc.video.volume = 0;
-              }
-            };
-          }
+    // Aplicar muting nativo irrompible al elemento video si isMuted es true
+    const enforceMute = () => {
+      if (rtc.video) {
+        rtc.video.muted = isMuted;
+        rtc.video.volume = isMuted ? 0 : 1;
+        if (isMuted) {
+          rtc.video.setAttribute('muted', '');
+          rtc.video.onvolumechange = () => {
+            if (!rtc.video.muted || rtc.video.volume > 0) {
+              rtc.video.muted = true;
+              rtc.video.volume = 0;
+            }
+          };
+        } else {
+          rtc.video.removeAttribute('muted');
         }
-      };
-      
-      enforceMute();
-      setTimeout(enforceMute, 50);
-      setTimeout(enforceMute, 200);
-      setTimeout(enforceMute, 600);
-      setTimeout(enforceMute, 1500);
+        rtc.video.playsInline = true;
+        rtc.video.play().catch(() => {});
+      }
+    };
+    
+    enforceMute();
+    setTimeout(enforceMute, 50);
+    setTimeout(enforceMute, 200);
+    setTimeout(enforceMute, 600);
+    setTimeout(enforceMute, 1500);
 
-      // Auto-reintento suave si la cámara corta la conexión temporalmente
-      setInterval(() => {
-        if (rtc && rtc.wsState === WebSocket.CLOSED && rtc.pcState === WebSocket.CLOSED) {
-          try { rtc.onconnect(); } catch (e) {}
-        }
-      }, 5000);
-    }).catch(err => {
-      console.warn("Fallback direct video-stream", err);
-      location.href = `http://${host}:1984/stream.html?src=${encodeURIComponent(src)}&media=${isMuted ? 'video' : 'video,audio'}&mode=webrtc,mse,mp4,mjpeg`;
-    });
+    // Auto-reintento suave si la cámara corta la conexión temporalmente
+    setInterval(() => {
+      if (rtc && rtc.wsState === WebSocket.CLOSED && rtc.pcState === WebSocket.CLOSED) {
+        try { rtc.onconnect(); } catch (e) {}
+      }
+    }, 5000);
   </script>
 </body>
 </html>
