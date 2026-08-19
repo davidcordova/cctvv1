@@ -62,9 +62,12 @@
     rtc.media = mediaMode;
     rtc.mode = 'webrtc,mse,mp4,mjpeg';
     rtc.background = true;
-    rtc.src = `ws://${host}:1984/api/ws?src=${encodeURIComponent(src)}`;
     
+    // 1. Agregar primero al DOM para inicializar el CustomElement
     document.body.appendChild(rtc);
+
+    // 2. Asignar src después de montar para que el ciclo de conexión sea limpio
+    rtc.src = `ws://${host}:1984/api/ws?src=${encodeURIComponent(src)}`;
 
     // Aplicar muting nativo irrompible al elemento video si isMuted es true
     const enforceMute = () => {
