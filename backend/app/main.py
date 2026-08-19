@@ -136,10 +136,15 @@ async def lifespan(app: FastAPI):
         with Session(engine) as session:
             try:
                 from sqlalchemy import text
-                session.exec(text("ALTER TABLE camera ADD COLUMN audio_enabled BOOLEAN DEFAULT 0"))
+                session.exec(text("ALTER TABLE camera ADD COLUMN IF NOT EXISTS audio_enabled BOOLEAN DEFAULT FALSE"))
                 session.commit()
             except Exception:
-                pass
+                try:
+                    session.rollback()
+                    session.exec(text("ALTER TABLE camera ADD COLUMN audio_enabled BOOLEAN DEFAULT 0"))
+                    session.commit()
+                except Exception:
+                    pass
 
             admin_user = session.exec(select(User).where(User.username == "admin")).first()
             if not admin_user:

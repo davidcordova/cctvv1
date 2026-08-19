@@ -57,37 +57,48 @@
         rtc.classList.add('fit-cover');
       }
       
-      // Control estricto de audio: si está silenciado, solo pedir video
-      rtc.media = isMuted ? 'video' : 'video,audio';
+      // Control estricto de audio: si está silenciado, solo pedir pista de video a go2rtc
+      const mediaMode = isMuted ? 'video' : 'video,audio';
+      rtc.media = mediaMode;
       rtc.mode = 'webrtc,mse,mp4,mjpeg';
       rtc.background = true;
-      rtc.src = `ws://${host}:1984/api/ws?src=${encodeURIComponent(src)}`;
+      rtc.src = `ws://${host}:1984/api/ws?src=${encodeURIComponent(src)}&media=${encodeURIComponent(mediaMode)}`;
       
       document.body.appendChild(rtc);
 
-      // Aplicar muting nativo al elemento video
+      // Aplicar muting nativo estricto e irrevocable al elemento video si isMuted es true
       const enforceMute = () => {
         if (rtc.video) {
           rtc.video.muted = isMuted;
           rtc.video.volume = isMuted ? 0 : 1;
           rtc.video.playsInline = true;
-          rtc.video.play().catch(() => {});
+          
+          if (isMuted) {
+            rtc.video.onvolumechange = () => {
+              if (!rtc.video.muted || rtc.video.volume > 0) {
+                rtc.video.muted = true;
+                rtc.video.volume = 0;
+              }
+            };
+          }
         }
       };
       
-      setTimeout(enforceMute, 20);
-      setTimeout(enforceMute, 150);
-      setTimeout(enforceMute, 500);
+      enforceMute();
+      setTimeout(enforceMute, 50);
+      setTimeout(enforceMute, 200);
+      setTimeout(enforceMute, 600);
+      setTimeout(enforceMute, 1500);
 
       // Auto-reintento suave si la cámara corta la conexión temporalmente
       setInterval(() => {
         if (rtc && rtc.wsState === WebSocket.CLOSED && rtc.pcState === WebSocket.CLOSED) {
           try { rtc.onconnect(); } catch (e) {}
         }
-      }, 6000);
+      }, 5000);
     }).catch(err => {
       console.warn("Fallback direct video-stream", err);
-      location.href = `http://${host}:1984/stream.html?src=${encodeURIComponent(src)}&mode=webrtc,mse,mp4,mjpeg`;
+      location.href = `http://${host}:1984/stream.html?src=${encodeURIComponent(src)}&media=${isMuted ? 'video' : 'video,audio'}&mode=webrtc,mse,mp4,mjpeg`;
     });
   </script>
 </body>
