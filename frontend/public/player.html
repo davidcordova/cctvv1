@@ -64,9 +64,8 @@
       rtc.classList.add('fit-cover');
     }
     
-    // Control estricto de pistas: si está silenciado, solo pedir video
-    const mediaMode = isMuted ? 'video' : 'video,audio';
-    rtc.media = mediaMode;
+    // Mantener video,audio para que WebRTC/MSE negocien todos los códecs de video y audio
+    rtc.media = 'video,audio';
     rtc.mode = 'webrtc,mse,mp4,mjpeg';
     rtc.background = true;
     
