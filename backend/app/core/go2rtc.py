@@ -90,11 +90,12 @@ def sync_go2rtc_config():
 
         config = {
             "api": {
-                "listen": ":1984"
+                "listen": ":1984",
+                "origin": "*"
             },
             "rtsp": {
                 "listen": ":8554",
-                "default_query": "backchannel=0"
+                "default_query": "backchannel=0#transport=tcp"
             },
             "webrtc": {
                 "listen": ":8555",
