@@ -639,7 +639,7 @@ const DeviceMgmt = () => {
                           {isWebRTCAvailable && camera.rtsp_url && camera.is_active ? (
                             <iframe 
                               key={`dev-mon-stream-${camera.id}-${t}`}
-                              src={`http://${window.location.hostname}:1984/stream.html?src=camera_${camera.id}&mode=webrtc,mse,mp4,mjpeg&media=video`} 
+                              src={`/player.html?src=camera_${camera.id}&muted=1`} 
                               title={camera.name}
                               className="absolute inset-0 w-full h-full border-0 pointer-events-none"
                               scrolling="no"

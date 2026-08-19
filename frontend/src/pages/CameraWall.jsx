@@ -101,7 +101,7 @@ const CameraCard = ({
         {useWebRTC ? (
           <iframe 
             key={`wall-stream-${camera.id}-${refreshKey}-${cardLocalKey}-${isAudioActive ? 'audio' : 'mute'}`}
-            src={`http://${window.location.hostname}:1984/stream.html?src=camera_${camera.id}&mode=webrtc,mse,mp4,mjpeg&media=${isAudioActive ? 'video,audio' : 'video'}`} 
+            src={`/player.html?src=camera_${camera.id}&muted=${isAudioActive ? '0' : '1'}`} 
             title={camera.name}
             className="absolute inset-0 w-full h-full border-0 pointer-events-none"
             scrolling="no"
@@ -809,7 +809,7 @@ const CameraWall = () => {
                 {streamMode === 'webrtc' && isWebRTCAvailable && activeCameras[activePatrolIndex].rtsp_url ? (
                   <iframe 
                     key={`patrol-stream-${activeCameras[activePatrolIndex].id}-${refreshKey}`}
-                    src={`http://${window.location.hostname}:1984/webrtc.html?src=camera_${activeCameras[activePatrolIndex].id}&mode=webrtc,mse,mp4,mjpeg`} 
+                    src={`/player.html?src=camera_${activeCameras[activePatrolIndex].id}&muted=1`} 
                     title={activeCameras[activePatrolIndex].name}
                     className="w-full h-full border-0"
                     allow="autoplay; fullscreen"
@@ -1256,7 +1256,7 @@ const CameraWall = () => {
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' ? (
                   <iframe 
                     key={`modal-stream-${zoomedCamera.id}-${modalStreamKey}-${modalAudioEnabled ? 'audio' : 'mute'}-${videoFit}`}
-                    src={`http://${window.location.hostname}:1984/stream.html?src=camera_${zoomedCamera.id}&mode=webrtc,mse,mp4,mjpeg&media=${modalAudioEnabled ? 'video,audio' : 'video'}`} 
+                    src={`/player.html?src=camera_${zoomedCamera.id}&muted=${modalAudioEnabled ? '0' : '1'}&fit=${videoFit}`} 
                     title={zoomedCamera.name}
                     className="w-full h-full max-h-full max-w-full border-0 z-10"
                     scrolling="no"
