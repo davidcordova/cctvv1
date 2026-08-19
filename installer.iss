@@ -54,5 +54,11 @@ Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema
 Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Stream API (1984)"" dir=in action=allow protocol=TCP localport=1984 profile=any"; Flags: runhidden
 Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - WebRTC (8555 UDP)"" dir=in action=allow protocol=UDP localport=8555 profile=any"; Flags: runhidden
 Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - WebRTC (8555 TCP)"" dir=in action=allow protocol=TCP localport=8555 profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - RTSP (8554)"" dir=in action=allow protocol=TCP localport=8554 profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - RTSP Server (8554)"" dir=in action=allow protocol=TCP localport=8554 profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - go2rtc Exe (Inbound)"" dir=in action=allow program=""{app}\go2rtc.exe"" enable=yes profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - go2rtc Exe (Outbound)"" dir=out action=allow program=""{app}\go2rtc.exe"" enable=yes profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Backend Exe (Inbound)"" dir=in action=allow program=""{app}\cctv_backend.exe"" enable=yes profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Backend Exe (Outbound)"" dir=out action=allow program=""{app}\cctv_backend.exe"" enable=yes profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - RTSP Cameras Outbound (554)"" dir=out action=allow protocol=TCP remoteport=554 profile=any"; Flags: runhidden
+Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - RTP Inbound (UDP)"" dir=in action=allow protocol=UDP localport=10000-65535 profile=any"; Flags: runhidden
 Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; Description: "Ejecutar {#MyAppName} ahora"; Flags: shellexec postinstall skipifsilent

@@ -123,12 +123,36 @@ def main():
         f.write('echo [OK] Arranque automatico desinstalado.\n')
         f.write('pause\n')
 
+    # Script para abrir y configurar Firewall de Windows con 1 clic (como Administrador)
+    firewall_bat = os.path.join(OUTPUT_DIR, "Configurar_Firewall_Windows.bat")
+    with open(firewall_bat, "w", encoding="utf-8") as f:
+        f.write('@echo off\n')
+        f.write('title Configurando Reglas de Firewall de Windows para Sistema CCTV\n')
+        f.write('echo ========================================================\n')
+        f.write('echo    CONFIGURANDO FIREWALL DE WINDOWS (ADMINISTRADOR)\n')
+        f.write('echo ========================================================\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Web (8500)" dir=in action=allow protocol=TCP localport=8500 profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Stream API (1984)" dir=in action=allow protocol=TCP localport=1984 profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - WebRTC (8555 UDP)" dir=in action=allow protocol=UDP localport=8555 profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - WebRTC (8555 TCP)" dir=in action=allow protocol=TCP localport=8555 profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - RTSP Server (8554)" dir=in action=allow protocol=TCP localport=8554 profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc Exe (Inbound)" dir=in action=allow program="%~dp0go2rtc.exe" enable=yes profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc Exe (Outbound)" dir=out action=allow program="%~dp0go2rtc.exe" enable=yes profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Backend Exe (Inbound)" dir=in action=allow program="%~dp0cctv_backend.exe" enable=yes profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Backend Exe (Outbound)" dir=out action=allow program="%~dp0cctv_backend.exe" enable=yes profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - RTSP Cameras Outbound (554)" dir=out action=allow protocol=TCP remoteport=554 profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - RTP Inbound (UDP)" dir=in action=allow protocol=UDP localport=10000-65535 profile=any\n')
+        f.write('echo.\n')
+        f.write('echo [OK] Reglas de Firewall de Windows configuradas exitosamente!\n')
+        f.write('pause\n')
+
     # También crear lanzadores en la raíz del dist
     shutil.copy2(iniciar_bat, os.path.join(DIST_DIR, "Iniciar_CCTV.bat"))
     shutil.copy2(detener_bat, os.path.join(DIST_DIR, "Detener_CCTV.bat"))
     shutil.copy2(silencioso_bat, os.path.join(DIST_DIR, "Iniciar_Servidor_Segundo_Plano.bat"))
     shutil.copy2(autostart_bat, os.path.join(DIST_DIR, "Instalar_Arranque_Automatico_Windows.bat"))
     shutil.copy2(remove_autostart_bat, os.path.join(DIST_DIR, "Desinstalar_Arranque_Automatico.bat"))
+    shutil.copy2(firewall_bat, os.path.join(DIST_DIR, "Configurar_Firewall_Windows.bat"))
 
     log("Step 6: Buscando Inno Setup Compiler para generar el instalador .exe...")
     inno_paths = [

@@ -59,10 +59,8 @@ def sync_go2rtc_config():
             for camera in cameras:
                 if camera.rtsp_url:
                     main_url = camera.rtsp_url
-                    if "#" not in main_url:
-                        pass # No longer appending #backchannel=0
-
                     device = devices_by_id.get(camera.device_id)
+                    cands = []
                     if device and device.password:
                         sub_url = generate_substream_url(
                             device.host,
@@ -71,14 +69,34 @@ def sync_go2rtc_config():
                             camera.channel,
                             device.brand
                         )
-                        if sub_url != main_url:
-                            streams[f"camera_{camera.id}"] = [sub_url, main_url]
-                        else:
-                            streams[f"camera_{camera.id}"] = main_url
-                        streams[f"camera_{camera.id}_hd"] = main_url
+                        if sub_url and sub_url != main_url:
+                            cands.append(sub_url)
+                        cands.append(main_url)
+                        
+                        # Rutas alternativas para cámaras ONVIF / Genéricas / IP
+                        encoded_u = urllib.parse.quote(device.username, safe="")
+                        encoded_p = urllib.parse.quote(device.password, safe="")
+                        
+                        alt_paths = [
+                            f"/Streaming/Channels/{camera.channel}01",
+                            f"/Streaming/Channels/{camera.channel}02",
+                            f"/h264/ch{camera.channel}/main/av_stream",
+                            f"/h264/ch{camera.channel}/sub/av_stream",
+                            f"/live/ch{camera.channel}",
+                            f"/onvif1",
+                            f"/stream1",
+                            f"/cam/realmonitor?channel={camera.channel}&subtype=0",
+                            f"/cam/realmonitor?channel={camera.channel}&subtype=1",
+                        ]
+                        for ap in alt_paths:
+                            cand = f"rtsp://{encoded_u}:{encoded_p}@{device.host}:554{ap}"
+                            if cand not in cands:
+                                cands.append(cand)
                     else:
-                        streams[f"camera_{camera.id}"] = main_url
-                        streams[f"camera_{camera.id}_hd"] = main_url
+                        cands.append(main_url)
+
+                    streams[f"camera_{camera.id}"] = cands if len(cands) > 1 else cands[0]
+                    streams[f"camera_{camera.id}_hd"] = main_url
         
         candidates = get_local_ip_candidates()
 
