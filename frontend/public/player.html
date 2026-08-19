@@ -29,6 +29,13 @@
     .fit-cover video {
       object-fit: cover !important;
     }
+    video::-webkit-media-controls,
+    video::-webkit-media-controls-enclosure,
+    video::-webkit-media-controls-panel {
+      display: none !important;
+      opacity: 0 !important;
+      visibility: hidden !important;
+    }
     /* Ocultar completamente textos, códigos y banners de error internos de go2rtc */
     .info, .status, .mode, div.info, div.status, div.mode {
       display: none !important;
@@ -72,16 +79,12 @@
     // Aplicar muting nativo irrompible al elemento video si isMuted es true
     const enforceMute = () => {
       if (rtc.video) {
+        rtc.video.controls = false;
         rtc.video.muted = isMuted;
+        rtc.video.defaultMuted = isMuted;
         rtc.video.volume = isMuted ? 0 : 1;
         if (isMuted) {
           rtc.video.setAttribute('muted', '');
-          rtc.video.onvolumechange = () => {
-            if (!rtc.video.muted || rtc.video.volume > 0) {
-              rtc.video.muted = true;
-              rtc.video.volume = 0;
-            }
-          };
         } else {
           rtc.video.removeAttribute('muted');
         }
@@ -90,6 +93,18 @@
       }
     };
     
+    if (rtc.video) {
+      ['play', 'playing', 'loadeddata', 'loadedmetadata', 'volumechange', 'canplay', 'timeupdate'].forEach(evt => {
+        rtc.video.addEventListener(evt, () => {
+          if (isMuted) {
+            rtc.video.muted = true;
+            rtc.video.volume = 0;
+            rtc.video.controls = false;
+          }
+        });
+      });
+    }
+
     enforceMute();
     setTimeout(enforceMute, 50);
     setTimeout(enforceMute, 200);

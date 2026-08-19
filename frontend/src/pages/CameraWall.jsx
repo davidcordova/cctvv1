@@ -55,7 +55,7 @@ const CameraCard = ({
   const [webrtcError, setWebrtcError] = useState(false);
   const [isRefreshingCard, setIsRefreshingCard] = useState(false);
 
-  const [isAudioActive, setIsAudioActive] = useState(camera.audio_enabled || false);
+  const [isAudioActive, setIsAudioActive] = useState(false);
 
   // Update snapshot when parent triggers a refresh
   useEffect(() => {
@@ -559,7 +559,7 @@ const CameraWall = () => {
       ...camera,
       url: currentSnapshotUrl
     });
-    setModalAudioEnabled(camera.audio_enabled || false);
+    setModalAudioEnabled(false);
     setModalMode(streamMode === 'webrtc' && isWebRTCAvailable ? 'live' : 'snapshot');
   };
 
@@ -1241,7 +1241,7 @@ const CameraWall = () => {
                       ...prevCam,
                       url: `${api.defaults.baseURL}/cameras/${prevCam.id}/snapshot?t=${Date.now()}`
                     });
-                    setModalAudioEnabled(prevCam.audio_enabled || false);
+                    setModalAudioEnabled(false);
                     setModalStreamKey(prev => prev + 1);
                   }}
                   className="absolute left-3 md:left-6 top-1/2 -translate-y-1/2 z-30 p-2.5 md:p-3 rounded-full bg-zinc-900/80 hover:bg-blue-600 text-zinc-300 hover:text-white backdrop-blur-md border border-zinc-700/50 shadow-2xl transition-all active:scale-90 cursor-pointer"
@@ -1283,7 +1283,7 @@ const CameraWall = () => {
                       ...nextCam,
                       url: `${api.defaults.baseURL}/cameras/${nextCam.id}/snapshot?t=${Date.now()}`
                     });
-                    setModalAudioEnabled(nextCam.audio_enabled || false);
+                    setModalAudioEnabled(false);
                     setModalStreamKey(prev => prev + 1);
                   }}
                   className="absolute right-3 md:right-6 top-1/2 -translate-y-1/2 z-30 p-2.5 md:p-3 rounded-full bg-zinc-900/80 hover:bg-blue-600 text-zinc-300 hover:text-white backdrop-blur-md border border-zinc-700/50 shadow-2xl transition-all active:scale-90 cursor-pointer"
