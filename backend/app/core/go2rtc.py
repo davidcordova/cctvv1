@@ -47,6 +47,14 @@ def get_local_ip_candidates():
     return list(dict.fromkeys(candidates))
 
 
+def ensure_rtsp_flags(url: str) -> str:
+    """Fuerza transporte TCP interleaved y desactiva backchannel para compatibilidad total con firewalls y cámaras IP."""
+    if not url or not url.startswith("rtsp://"):
+        return url
+    clean_url = url.split("#")[0]
+    return f"{clean_url}#transport=tcp#backchannel=0"
+
+
 def sync_go2rtc_config():
     try:
         binary_path, config_path = get_go2rtc_paths()
@@ -70,33 +78,13 @@ def sync_go2rtc_config():
                             device.brand
                         )
                         if sub_url and sub_url != main_url:
-                            cands.append(sub_url)
-                        cands.append(main_url)
-                        
-                        # Rutas alternativas para cámaras ONVIF / Genéricas / IP
-                        encoded_u = urllib.parse.quote(device.username, safe="")
-                        encoded_p = urllib.parse.quote(device.password, safe="")
-                        
-                        alt_paths = [
-                            f"/Streaming/Channels/{camera.channel}01",
-                            f"/Streaming/Channels/{camera.channel}02",
-                            f"/h264/ch{camera.channel}/main/av_stream",
-                            f"/h264/ch{camera.channel}/sub/av_stream",
-                            f"/live/ch{camera.channel}",
-                            f"/onvif1",
-                            f"/stream1",
-                            f"/cam/realmonitor?channel={camera.channel}&subtype=0",
-                            f"/cam/realmonitor?channel={camera.channel}&subtype=1",
-                        ]
-                        for ap in alt_paths:
-                            cand = f"rtsp://{encoded_u}:{encoded_p}@{device.host}:554{ap}"
-                            if cand not in cands:
-                                cands.append(cand)
+                            cands.append(ensure_rtsp_flags(sub_url))
+                        cands.append(ensure_rtsp_flags(main_url))
                     else:
-                        cands.append(main_url)
+                        cands.append(ensure_rtsp_flags(main_url))
 
                     streams[f"camera_{camera.id}"] = cands if len(cands) > 1 else cands[0]
-                    streams[f"camera_{camera.id}_hd"] = main_url
+                    streams[f"camera_{camera.id}_hd"] = ensure_rtsp_flags(main_url)
         
         candidates = get_local_ip_candidates()
 
