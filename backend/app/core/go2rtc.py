@@ -47,14 +47,6 @@ def get_local_ip_candidates():
     return list(dict.fromkeys(candidates))
 
 
-def ensure_rtsp_flags(url: str) -> str:
-    """Fuerza transporte TCP interleaved y desactiva backchannel para compatibilidad total con firewalls y cámaras IP."""
-    if not url or not url.startswith("rtsp://"):
-        return url
-    clean_url = url.split("#")[0]
-    return f"{clean_url}#transport=tcp#backchannel=0"
-
-
 def sync_go2rtc_config():
     try:
         binary_path, config_path = get_go2rtc_paths()
@@ -66,25 +58,21 @@ def sync_go2rtc_config():
 
             for camera in cameras:
                 if camera.rtsp_url:
-                    main_url = camera.rtsp_url
+                    main_url = camera.rtsp_url.split("#")[0]
                     device = devices_by_id.get(camera.device_id)
-                    cands = []
-                    if device and device.password:
+                    if device and device.password and (device.channel_count or 1) > 2:
                         sub_url = generate_substream_url(
                             device.host,
                             device.username,
                             device.password,
                             camera.channel,
                             device.brand
-                        )
-                        if sub_url and sub_url != main_url:
-                            cands.append(ensure_rtsp_flags(sub_url))
-                        cands.append(ensure_rtsp_flags(main_url))
+                        ).split("#")[0]
+                        streams[f"camera_{camera.id}"] = sub_url
+                        streams[f"camera_{camera.id}_hd"] = main_url
                     else:
-                        cands.append(ensure_rtsp_flags(main_url))
-
-                    streams[f"camera_{camera.id}"] = cands if len(cands) > 1 else cands[0]
-                    streams[f"camera_{camera.id}_hd"] = ensure_rtsp_flags(main_url)
+                        streams[f"camera_{camera.id}"] = main_url
+                        streams[f"camera_{camera.id}_hd"] = main_url
         
         candidates = get_local_ip_candidates()
 
