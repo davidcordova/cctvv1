@@ -20,6 +20,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api, { deviceService } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { formatStorageInfo } from '../utils/storageUtils';
 
 const DeviceMgmt = () => {
   const { user } = useAuth();
@@ -36,6 +37,7 @@ const DeviceMgmt = () => {
   const [savingCameraIds, setSavingCameraIds] = useState(new Set());
   const [savedCameraIds, setSavedCameraIds] = useState(new Set());
   const [syncingDeviceIds, setSyncingDeviceIds] = useState(new Set());
+  const [syncingStorageIds, setSyncingStorageIds] = useState(new Set());
   const [isSyncingAll, setIsSyncingAll] = useState(false);
   const [cameraRefreshKeys, setCameraRefreshKeys] = useState({});
   const [monitorRefreshKey, setMonitorRefreshKey] = useState(0);
@@ -115,19 +117,27 @@ const DeviceMgmt = () => {
     }
   };
 
-  // Sincronizar hora de todos los equipos
-  const handleSyncAllTime = async () => {
-    if (!confirm('¿Deseas sincronizar la fecha y hora de todos los grabadores conectados con el servidor local?')) return;
-    setIsSyncingAll(true);
+  // Sincronizar almacenamiento de un equipo
+  const handleSyncStorage = async (device) => {
+    if (!device.is_online) {
+      alert(`El dispositivo "${device.name}" se encuentra fuera de línea.`);
+      return;
+    }
+    setSyncingStorageIds(prev => new Set(prev).add(device.id));
     try {
-      const res = await api.post('/devices/sync-all-time');
-      alert(res.data.message);
+      const res = await api.post(`/devices/${device.id}/sync-storage`);
       queryClient.invalidateQueries({ queryKey: ['devices'] });
+      queryClient.invalidateQueries({ queryKey: ['cameras'] });
       queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
+      alert(`✓ ${res.data.message}`);
     } catch (err) {
-      alert('Error en sincronización masiva: ' + (err.response?.data?.detail || err.message));
+      alert(`Error al verificar almacenamiento de ${device.name}: ${err.response?.data?.detail || err.message}`);
     } finally {
-      setIsSyncingAll(false);
+      setSyncingStorageIds(prev => {
+        const next = new Set(prev);
+        next.delete(device.id);
+        return next;
+      });
     }
   };
 
@@ -216,14 +226,14 @@ const DeviceMgmt = () => {
   const adoptDevice = (dev) => {
     setTestStatus(null);
     setFormData({
-      name: dev.model || 'Grabador CCTV',
+      name: dev.model || (dev.brand ? `Grabador ${dev.brand}` : 'Grabador CCTV'),
       host: dev.host,
-      port: dev.port || 80,
+      port: parseInt(dev.port) || 80,
       username: 'admin',
       password: '',
       device_type: dev.type || 'DVR',
-      brand: 'Hikvision',
-      channel_count: 8
+      brand: dev.brand || 'Hikvision',
+      channel_count: dev.channel_count || 8
     });
     setIsModalOpen(true);
   };
@@ -313,7 +323,7 @@ const DeviceMgmt = () => {
                 className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-200 px-3.5 py-2 rounded-xl font-semibold transition-all active:scale-95 disabled:opacity-50 cursor-pointer text-xs"
               >
                 <Radar size={15} className={isScanning ? 'animate-spin' : ''} />
-                {isScanning ? 'Escaneando...' : 'Escanear Red'}
+                {isScanning ? 'Escaneando Red...' : 'Escanear Red'}
               </button>
               
               <button 
@@ -331,20 +341,37 @@ const DeviceMgmt = () => {
       {/* Discovered Devices Row (Solo Admin) */}
       {isAdmin && discoveredDevices.length > 0 && (
         <div className="space-y-3 animate-in slide-in-from-top-4 duration-500">
-          <h2 className="text-sm font-bold text-zinc-500 uppercase flex items-center gap-2">
+          <h2 className="text-sm font-bold text-zinc-400 uppercase flex items-center gap-2">
             <CheckCircle2 size={16} className="text-emerald-500" />
-            Dispositivos Encontrados en la Red ({discoveredDevices.length})
+            Dispositivos Detectados en la Red ({discoveredDevices.length})
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {discoveredDevices.map((dev, idx) => (
-              <div key={idx} className="card-zinc bg-zinc-900/50 flex justify-between items-center group">
-                <div>
-                  <p className="font-bold text-zinc-200">{dev.model}</p>
-                  <p className="text-xs text-zinc-500 font-mono">{dev.host}</p>
+              <div key={idx} className="card-zinc bg-zinc-900/70 border border-zinc-800/90 hover:border-zinc-700 flex justify-between items-center group transition-all">
+                <div className="space-y-1 min-w-0 pr-3">
+                  <div className="flex items-center gap-2">
+                    <p className="font-bold text-zinc-200 text-sm truncate">{dev.model}</p>
+                    <span className={`px-1.5 py-0.5 text-[9px] font-bold uppercase rounded border ${
+                      dev.brand === 'Dahua' 
+                        ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' 
+                        : dev.brand === 'Hikvision' 
+                        ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' 
+                        : dev.brand === 'Ezviz'
+                        ? 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                        : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                    }`}>
+                      {dev.brand}
+                    </span>
+                  </div>
+                  <p className="text-xs text-zinc-500 font-mono flex items-center gap-2">
+                    <span>{dev.host}:{dev.port || 80}</span>
+                    <span>&bull;</span>
+                    <span>{dev.channel_count || 8} Ch</span>
+                  </p>
                 </div>
                 <button 
                   onClick={() => adoptDevice(dev)}
-                  className="px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-500 hover:text-white text-xs font-bold rounded-lg transition-all border border-emerald-500/20 cursor-pointer"
+                  className="px-3.5 py-1.5 bg-emerald-500/10 hover:bg-emerald-500 text-emerald-400 hover:text-white text-xs font-bold rounded-lg transition-all border border-emerald-500/30 cursor-pointer shrink-0 shadow-sm active:scale-95"
                 >
                   Adoptar
                 </button>
@@ -355,16 +382,16 @@ const DeviceMgmt = () => {
       )}
 
       {/* Devices Table */}
-      <div className="card-zinc p-0 overflow-hidden">
-        <table className="w-full text-left">
+      <div className="card-zinc p-0 overflow-x-auto shadow-2xl border border-zinc-800/80 rounded-2xl">
+        <table className="w-full text-left min-w-[950px] divide-y divide-zinc-800">
           <thead>
-            <tr className="bg-zinc-900/50 border-b border-zinc-800 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              <th className="px-6 py-4">Grabador / Ubicación</th>
-              <th className="px-6 py-4">Host / Red</th>
-              <th className="px-6 py-4">Disco Duro (HDD)</th>
-              <th className="px-6 py-4">Sincronización Horaria</th>
-              <th className="px-6 py-4">Conexión</th>
-              <th className="px-6 py-4 text-right">Acciones</th>
+            <tr className="bg-zinc-900/80 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+              <th className="px-5 py-3.5">Grabador / Ubicación</th>
+              <th className="px-5 py-3.5">Host / Red</th>
+              <th className="px-5 py-3.5">Disco Duro (HDD)</th>
+              <th className="px-5 py-3.5">Sincronización Horaria</th>
+              <th className="px-5 py-3.5 text-center">Conexión</th>
+              <th className="px-5 py-3.5 text-right whitespace-nowrap">Acciones</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-800">
@@ -407,25 +434,66 @@ const DeviceMgmt = () => {
                     <div className="text-[10px] text-zinc-500">S/N: {device.serial_number || 'N/A'}</div>
                   </td>
 
-                  {/* Estado de Disco Duro (HDD) */}
+                  {/* Estado de Disco Duro (HDD/MicroSD/SSD) */}
                   <td className="px-6 py-4">
-                    <div className="space-y-1">
-                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[10px] font-bold uppercase border ${
-                        !device.is_online 
-                          ? 'bg-zinc-800 text-zinc-500 border-zinc-700' 
-                          : isHddOk 
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
-                          : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
-                      }`}>
-                        <HardDrive size={11} />
-                        {device.is_online ? hddStatus : 'Offline'}
-                      </span>
-                      {device.is_online && (
-                        <p className="text-[10px] text-zinc-500 font-mono">
-                          Capacidad: {device.hdd_capacity_total_gb || 2000} GB
-                        </p>
-                      )}
-                    </div>
+                    {(() => {
+                      const storage = formatStorageInfo(
+                        device.hdd_capacity_total_gb, 
+                        device.hdd_capacity_free_gb, 
+                        device.storage_media_type, 
+                        device.hdd_status, 
+                        device.is_online
+                      );
+                      const isSyncingStorage = syncingStorageIds.has(device.id);
+
+                      return (
+                        <div className="space-y-1 max-w-[210px]">
+                          <div className="flex items-center gap-1.5">
+                            <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase border ${
+                              !device.is_online 
+                                ? 'bg-zinc-800 text-zinc-500 border-zinc-700' 
+                                : storage.isOk 
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                                : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                            }`}>
+                              <HardDrive size={11} className={isSyncingStorage ? 'animate-spin' : ''} />
+                              {storage.badge}
+                            </span>
+                            {device.is_online && !isViewer && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSyncStorage(device);
+                                }}
+                                disabled={isSyncingStorage}
+                                title="Verificar almacenamiento real ahora"
+                                className="text-zinc-500 hover:text-blue-400 p-0.5 rounded transition-colors cursor-pointer"
+                              >
+                                <RotateCw size={11} className={isSyncingStorage ? 'animate-spin text-blue-400' : ''} />
+                              </button>
+                            )}
+                          </div>
+                          {device.is_online && (
+                            <>
+                              <p className="text-[11px] font-semibold text-zinc-300 font-mono leading-tight">
+                                {storage.primary}
+                              </p>
+                              <p className="text-[9.5px] text-zinc-500 font-mono leading-tight">
+                                {storage.secondary}
+                              </p>
+                              {storage.percentUsed > 0 && !storage.isNvrManaged && (
+                                <div className="w-full bg-zinc-800 h-1 rounded-full overflow-hidden mt-1">
+                                  <div 
+                                    className={`h-full ${storage.percentFree > 10 ? 'bg-emerald-500' : 'bg-blue-500'}`} 
+                                    style={{ width: `${Math.min(100, storage.percentUsed)}%` }} 
+                                  />
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </td>
 
                   {/* Sincronización Horaria y Desfase */}
@@ -575,10 +643,22 @@ const DeviceMgmt = () => {
                   <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-400 font-mono mt-0.5">
                     <span>{activeMonitorDevice.brand} &bull; {activeMonitorDevice.host}:{activeMonitorDevice.port}</span>
                     <span>&bull;</span>
-                    <span className="text-emerald-400 font-semibold flex items-center gap-1">
-                      <HardDrive size={13} />
-                      HDD: {activeMonitorDevice.hdd_status || 'Normal (Formato OK)'} ({activeMonitorDevice.hdd_capacity_free_gb || 420} GB Libres)
-                    </span>
+                    {(() => {
+                      const st = formatStorageInfo(
+                        activeMonitorDevice.hdd_capacity_total_gb,
+                        activeMonitorDevice.hdd_capacity_free_gb,
+                        activeMonitorDevice.storage_media_type,
+                        activeMonitorDevice.hdd_status,
+                        activeMonitorDevice.is_online
+                      );
+                      return (
+                        <span className="text-emerald-400 font-semibold flex items-center gap-1.5">
+                          <HardDrive size={13} />
+                          <span className="text-zinc-400">{st.badge}:</span>
+                          <span className="text-zinc-200">{st.primary}</span>
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>

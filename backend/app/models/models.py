@@ -47,10 +47,11 @@ class Device(SQLModel, table=True):
     serial_number: Optional[str] = None
     is_online: bool = Field(default=False)
     
-    # HDD & Almacenamiento
+    # HDD & Almacenamiento Real y Telemetría
+    storage_media_type: Optional[str] = Field(default="HDD SATA") # "HDD SATA", "MicroSD / SSD Local", "NAS / Red", "Sin Almacenamiento Local"
     hdd_status: Optional[str] = Field(default="Normal (Formato OK)")
-    hdd_capacity_total_gb: Optional[float] = Field(default=2000.0)
-    hdd_capacity_free_gb: Optional[float] = Field(default=420.0)
+    hdd_capacity_total_gb: Optional[float] = Field(default=None)
+    hdd_capacity_free_gb: Optional[float] = Field(default=None)
     
     # Sincronización de Fecha y Hora con Servidor
     device_time: Optional[datetime] = None
@@ -71,9 +72,10 @@ class Camera(SQLModel, table=True):
     # Asignación de Puerto / Inventario Físico
     is_installed: bool = Field(default=True) # True: Cámara conectada / False: Puerto libre o en reserva
     
-    # Modalidad de Grabación y Señal de Video
+    # Modalidad de Grabación, Almacenamiento y Señal
     is_recording: bool = Field(default=True)
     recording_mode: Optional[str] = Field(default="Continuo (24/7)")
+    storage_location: Optional[str] = Field(default=None) # ej. "NVR Centralizado (192.168.3.82)", "MicroSD Local", "DVR Local"
     has_video_signal: bool = Field(default=True)
     audio_enabled: bool = Field(default=False) # True: Audio activado / False: Silenciado (Por defecto)
 

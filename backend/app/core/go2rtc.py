@@ -52,7 +52,7 @@ def sync_go2rtc_config():
         binary_path, config_path = get_go2rtc_paths()
         streams = {}
         with Session(engine) as session:
-            cameras = session.exec(select(Camera).where(Camera.is_active == True)).all()
+            cameras = session.exec(select(Camera).where(Camera.rtsp_url != None)).all()
             # Mapear dispositivos en memoria para optimizar consultas
             devices_by_id = {d.id: d for d in session.exec(select(Device)).all()}
 
@@ -60,7 +60,15 @@ def sync_go2rtc_config():
                 if camera.rtsp_url:
                     main_url = camera.rtsp_url.split("#")[0]
                     device = devices_by_id.get(camera.device_id)
-                    if device and device.password and (device.channel_count or 1) > 2:
+                    is_dvr = (
+                        device 
+                        and str(device.device_type).upper() in ("DVR", "NVR") 
+                        and (device.channel_count or 1) > 1 
+                        and device.host != "192.168.2.36"
+                        and "ezviz" not in str(device.brand).lower()
+                    )
+
+                    if is_dvr and device.password:
                         sub_url = generate_substream_url(
                             device.host,
                             device.username,
@@ -68,11 +76,23 @@ def sync_go2rtc_config():
                             camera.channel,
                             device.brand
                         ).split("#")[0]
-                        streams[f"camera_{camera.id}"] = sub_url
-                        streams[f"camera_{camera.id}_hd"] = main_url
+                        streams[f"camera_{camera.id}"] = f"{sub_url}#backchannel=0"
+                        streams[f"camera_{camera.id}_hd"] = f"{main_url}#backchannel=0"
+                    elif device and "ezviz" in str(device.brand).lower():
+                        # Cámaras Ezviz: probar URL principal y variantes estándar de Ezviz (RTSP e ISAPI)
+                        user_enc = urllib.parse.quote(device.username or "admin", safe="")
+                        pass_enc = urllib.parse.quote(device.password or "", safe="")
+                        ezviz_sources = [
+                            f"{main_url}#backchannel=0",
+                            f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/Streaming/Channels/101#backchannel=0",
+                            f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/h264/ch1/main/av_stream#backchannel=0",
+                            f"isapi://{user_enc}:{pass_enc}@{device.host}:{device.port or 80}/#backchannel=0"
+                        ]
+                        streams[f"camera_{camera.id}"] = ezviz_sources
+                        streams[f"camera_{camera.id}_hd"] = ezviz_sources
                     else:
-                        streams[f"camera_{camera.id}"] = main_url
-                        streams[f"camera_{camera.id}_hd"] = main_url
+                        streams[f"camera_{camera.id}"] = f"{main_url}#backchannel=0"
+                        streams[f"camera_{camera.id}_hd"] = f"{main_url}#backchannel=0"
         
         candidates = get_local_ip_candidates()
 

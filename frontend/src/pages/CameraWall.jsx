@@ -10,6 +10,9 @@ import {
   Star, 
   Layers, 
   Play, 
+  Pause,
+  Clock,
+  Zap,
   ChevronLeft, 
   ChevronRight,
   Radio,
@@ -21,7 +24,9 @@ import {
   RotateCcw,
   ArrowLeftRight,
   Volume2,
-  VolumeX
+  VolumeX,
+  Mic,
+  MicOff
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
@@ -254,6 +259,8 @@ const CameraCard = ({
 };
 
 
+const INTERVAL_OPTIONS = [7, 10, 20, 30, 60, 120];
+
 const CameraWall = () => {
   const { user } = useAuth();
   const orderStorageKey = user?.id ? `cctv_wall_order_u${user.id}` : 'cctv_wall_order_guest';
@@ -266,13 +273,53 @@ const CameraWall = () => {
   const [zoomedCamera, setZoomedCamera] = useState(null);
   const [modalStreamKey, setModalStreamKey] = useState(0);
   const [modalMode, setModalMode] = useState('live');
+  const [modalQuality, setModalQuality] = useState('sd'); // 'sd' (substream ligero) o 'hd' (mainstream alta definición)
   const [modalAudioEnabled, setModalAudioEnabled] = useState(false);
+  const [isTalking, setIsTalking] = useState(false);
   const [videoFit, setVideoFit] = useState('contain');
   const [streamMode, setStreamMode] = useState('webrtc');
-  const [autoRefreshSec, setAutoRefreshSec] = useState(5);
   const [isWebRTCAvailable, setIsWebRTCAvailable] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Intervalos configurables (7, 10, 20, 30, 60, 120s) persistidos en localStorage
+  const [autoRefreshSec, setAutoRefreshSec] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cctv_snapshot_interval');
+      return saved !== null ? parseInt(saved, 10) : 10;
+    } catch (e) {
+      return 10;
+    }
+  });
+
+  const [patrolIntervalSec, setPatrolIntervalSec] = useState(() => {
+    try {
+      const saved = localStorage.getItem('cctv_patrol_interval');
+      return saved !== null ? parseInt(saved, 10) : 10;
+    } catch (e) {
+      return 10;
+    }
+  });
+
+  const [isPatrolPaused, setIsPatrolPaused] = useState(false);
+  const [patrolCountdown, setPatrolCountdown] = useState(patrolIntervalSec);
+
+  const handleAutoRefreshChange = (newSec) => {
+    const val = parseInt(newSec, 10);
+    setAutoRefreshSec(val);
+    try {
+      localStorage.setItem('cctv_snapshot_interval', String(val));
+    } catch (e) {}
+  };
+
+  const handlePatrolIntervalChange = (newSec) => {
+    const val = parseInt(newSec, 10);
+    setPatrolIntervalSec(val);
+    setPatrolCountdown(val);
+    try {
+      localStorage.setItem('cctv_patrol_interval', String(val));
+    } catch (e) {}
+  };
 
   // Estados para reordenamiento dinámico por usuario (Drag & Drop)
   const [isReordering, setIsReordering] = useState(false);
@@ -473,16 +520,30 @@ const CameraWall = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [totalPages, zoomedCamera, isReordering]);
 
-  // Cycle through cameras in patrol mode (every 7 seconds)
+  // Sincronizar cuenta regresiva al cambiar intervalo o cámara
   useEffect(() => {
     if (layout !== 'patrol' || activeCameras.length === 0) return;
-    const interval = setInterval(() => {
-      setActivePatrolIndex(prev => (prev + 1) % activeCameras.length);
-    }, 7000);
-    return () => clearInterval(interval);
-  }, [layout, activeCameras.length]);
+    setPatrolCountdown(patrolIntervalSec);
+  }, [layout, activePatrolIndex, patrolIntervalSec]);
 
-  // Auto-refresh timer for snapshots
+  // Rotar cámaras en modo ronda con temporizador dinámico de 1s y soporte de pausa
+  useEffect(() => {
+    if (layout !== 'patrol' || activeCameras.length === 0 || isPatrolPaused) return;
+    
+    const interval = setInterval(() => {
+      setPatrolCountdown(prev => {
+        if (prev <= 1) {
+          setActivePatrolIndex(curr => (curr + 1) % activeCameras.length);
+          return patrolIntervalSec;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [layout, activeCameras.length, isPatrolPaused, patrolIntervalSec]);
+
+  // Temporizador de auto-refresco para instantáneas (snapshots)
   useEffect(() => {
     if (autoRefreshSec <= 0 || streamMode !== 'snapshot') return;
     const interval = setInterval(() => {
@@ -716,19 +777,58 @@ const CameraWall = () => {
             </button>
           </div>
 
-          {/* Auto-refresh interval dropdown */}
+          {/* Selector de intervalo para Snapshots */}
           {streamMode === 'snapshot' && (
             <div className="flex items-center gap-1.5 bg-zinc-950 px-2.5 py-1.5 rounded-lg border border-zinc-800 text-xs">
+              <Clock size={13} className="text-zinc-500" />
               <span className="text-zinc-500 font-medium">Refresco:</span>
               <select 
                 value={autoRefreshSec}
-                onChange={(e) => setAutoRefreshSec(parseInt(e.target.value))}
-                className="bg-transparent text-zinc-200 border-none outline-none font-bold cursor-pointer"
+                onChange={(e) => handleAutoRefreshChange(e.target.value)}
+                className="bg-transparent text-blue-400 border-none outline-none font-bold cursor-pointer"
+                title="Intervalo de actualización de instantáneas"
               >
                 <option value={3} className="bg-zinc-900 text-zinc-200">3s</option>
                 <option value={5} className="bg-zinc-900 text-zinc-200">5s</option>
-                <option value={10} className="bg-zinc-900 text-zinc-200">10s</option>
-                <option value={0} className="bg-zinc-900 text-zinc-200">Off</option>
+                {INTERVAL_OPTIONS.map(sec => (
+                  <option key={`snap-sec-${sec}`} value={sec} className="bg-zinc-900 text-zinc-200">
+                    {sec}s
+                  </option>
+                ))}
+                <option value={0} className="bg-zinc-900 text-zinc-200">Manual (Off)</option>
+              </select>
+            </div>
+          )}
+
+          {/* Controles rápidos de Ronda en la barra superior cuando está activo */}
+          {layout === 'patrol' && (
+            <div className="flex items-center gap-1.5 bg-zinc-950 px-2.5 py-1 rounded-xl border border-emerald-800/60 text-xs shadow-md shadow-emerald-950/30">
+              <button
+                type="button"
+                onClick={() => setIsPatrolPaused(prev => !prev)}
+                className={`p-1 rounded-lg transition-all cursor-pointer ${
+                  isPatrolPaused ? 'bg-amber-500 text-black font-bold' : 'hover:bg-zinc-800 text-emerald-400'
+                }`}
+                title={isPatrolPaused ? "Reanudar ronda" : "Pausar ronda"}
+              >
+                {isPatrolPaused ? <Play size={13} /> : <Pause size={13} />}
+              </button>
+              <div className="flex items-center gap-1 font-mono text-[11px] text-zinc-300">
+                <Clock size={12} className="text-zinc-500" />
+                <span>{isPatrolPaused ? 'Pausa' : `${patrolCountdown}s`}</span>
+              </div>
+              <span className="text-zinc-700">|</span>
+              <select
+                value={patrolIntervalSec}
+                onChange={(e) => handlePatrolIntervalChange(e.target.value)}
+                className="bg-transparent text-emerald-400 font-bold border-none outline-none cursor-pointer text-xs"
+                title="Tiempo de rotación de la ronda"
+              >
+                {INTERVAL_OPTIONS.map(sec => (
+                  <option key={`patrol-top-sec-${sec}`} value={sec} className="bg-zinc-900 text-zinc-200">
+                    {sec}s
+                  </option>
+                ))}
               </select>
             </div>
           )}
@@ -833,36 +933,93 @@ const CameraWall = () => {
                   </div>
                 </div>
 
-                {/* Floating Bottom Patrol Controls */}
-                <div className="absolute bottom-6 left-6 z-30 bg-black/85 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-zinc-800 text-xs font-semibold text-zinc-200 shadow-2xl flex items-center gap-3.5 select-none">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-ping" />
-                    <span className="text-blue-400 font-bold">Ronda Activa ({activePatrolIndex + 1} / {activeCameras.length})</span>
-                  </div>
-                  <span className="text-zinc-700">|</span>
-                  <div className="flex items-center gap-1.5">
+                {/* Floating Bottom Patrol Controls con Selector de Tiempo y Progreso */}
+                <div className="absolute bottom-6 left-6 z-30 bg-black/90 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-emerald-900/60 text-xs font-semibold text-zinc-200 shadow-2xl flex flex-col gap-2 select-none overflow-hidden ring-1 ring-emerald-500/20">
+                  <div className="flex items-center gap-3.5">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${isPatrolPaused ? 'bg-amber-400' : 'bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]'}`} />
+                      <span className="text-emerald-400 font-bold">
+                        Ronda Activa ({activePatrolIndex + 1} / {activeCameras.length})
+                      </span>
+                    </div>
+                    <span className="text-zinc-700">|</span>
+                    
                     <button
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setActivePatrolIndex(prev => (prev > 0 ? prev - 1 : activeCameras.length - 1));
+                        setIsPatrolPaused(prev => !prev);
                       }}
-                      className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-colors cursor-pointer"
-                      title="Cámara anterior"
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        isPatrolPaused 
+                          ? 'bg-amber-500 hover:bg-amber-400 text-black shadow' 
+                          : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white border border-zinc-700'
+                      }`}
+                      title={isPatrolPaused ? "Reanudar ronda automática" : "Pausar ronda en esta cámara"}
                     >
-                      <ChevronLeft size={16} />
+                      {isPatrolPaused ? <Play size={13} /> : <Pause size={13} />}
+                      <span>{isPatrolPaused ? 'Reanudar' : 'Pausar'}</span>
                     </button>
-                    <span className="text-[11px] text-zinc-400 font-mono">Cambio cada 7s</span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActivePatrolIndex(prev => (prev + 1) % activeCameras.length);
-                      }}
-                      className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-lg transition-colors cursor-pointer"
-                      title="Siguiente cámara"
-                    >
-                      <ChevronRight size={16} />
-                    </button>
+
+                    <div className="flex items-center gap-1 bg-zinc-900/90 px-2 py-1 rounded-lg border border-zinc-800">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActivePatrolIndex(prev => (prev > 0 ? prev - 1 : activeCameras.length - 1));
+                          setPatrolCountdown(patrolIntervalSec);
+                        }}
+                        className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded transition-colors cursor-pointer"
+                        title="Cámara anterior"
+                      >
+                        <ChevronLeft size={15} />
+                      </button>
+                      
+                      <div className="flex items-center gap-1 font-mono text-[11px] text-zinc-300 px-1">
+                        <Clock size={12} className="text-emerald-400" />
+                        <select
+                          value={patrolIntervalSec}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            handlePatrolIntervalChange(e.target.value);
+                          }}
+                          className="bg-transparent text-emerald-400 font-bold border-none outline-none cursor-pointer text-xs"
+                          title="Seleccionar intervalo de cambio entre cámaras"
+                        >
+                          {INTERVAL_OPTIONS.map(sec => (
+                            <option key={`patrol-float-${sec}`} value={sec} className="bg-zinc-900 text-zinc-200">
+                              {sec}s
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActivePatrolIndex(prev => (prev + 1) % activeCameras.length);
+                          setPatrolCountdown(patrolIntervalSec);
+                        }}
+                        className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded transition-colors cursor-pointer"
+                        title="Siguiente cámara"
+                      >
+                        <ChevronRight size={15} />
+                      </button>
+                    </div>
+
+                    <span className="text-[11px] font-mono text-zinc-400">
+                      {isPatrolPaused ? '(Pausado)' : `Siguiente en ${patrolCountdown}s`}
+                    </span>
                   </div>
+
+                  {/* Barra de progreso de cuenta regresiva */}
+                  {!isPatrolPaused && (
+                    <div className="w-full bg-zinc-800/80 h-1 rounded-full overflow-hidden">
+                      <div 
+                        className="bg-emerald-500 h-full transition-all duration-1000 ease-linear rounded-full"
+                        style={{ width: `${Math.max(0, Math.min(100, ((patrolIntervalSec - patrolCountdown + 1) / patrolIntervalSec) * 100))}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1121,8 +1278,12 @@ const CameraWall = () => {
                     {zoomedCamera.name}
                     <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.7)] animate-pulse" />
                   </h2>
-                  <p className="text-xs text-zinc-400 font-mono">
-                    Canal {zoomedCamera.channel} • {modalMode === 'live' ? 'Transmisión en Vivo (Baja Latencia)' : 'Modo Instantánea HD'}
+                  <p className="text-xs text-zinc-400 font-mono flex items-center gap-2">
+                    <span>Canal {zoomedCamera.channel}</span>
+                    <span>•</span>
+                    <span>{modalMode === 'live' ? 'Transmisión en Vivo (Baja Latencia)' : 'Modo Instantánea HD'}</span>
+                    <span>•</span>
+                    <span className="text-emerald-400/90 font-medium">💾 {zoomedCamera.storage_location || 'Grabación Centralizada en NVR'}</span>
                   </p>
                 </div>
               </div>
@@ -1146,7 +1307,10 @@ const CameraWall = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setModalMode('snapshot')}
+                      onClick={() => {
+                        setModalMode('snapshot');
+                        setIsTalking(false);
+                      }}
                       className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
                         modalMode === 'snapshot'
                           ? 'bg-blue-600 text-white shadow-md'
@@ -1176,20 +1340,51 @@ const CameraWall = () => {
                   <span className="hidden sm:inline">Refrescar</span>
                 </button>
 
-                {/* Botón Audio / Micrófono en Zoom Modal */}
+                {/* Botón Audio / Escuchar de la cámara */}
                 <button 
                   type="button"
                   onClick={() => setModalAudioEnabled(prev => !prev)}
                   className={`p-2 rounded-lg transition-all text-xs font-medium flex items-center gap-1.5 active:scale-95 border cursor-pointer ${
-                    modalAudioEnabled 
+                    modalAudioEnabled || isTalking
                       ? 'bg-amber-500 hover:bg-amber-400 text-black border-amber-400 font-bold shadow-lg shadow-amber-500/20' 
                       : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border-zinc-700/50'
                   }`}
-                  title={modalAudioEnabled ? "Silenciar audio" : "Escuchar audio / micrófono de la cámara"}
+                  title={modalAudioEnabled || isTalking ? "Silenciar audio" : "Escuchar audio de la cámara"}
                 >
-                  {modalAudioEnabled ? <Volume2 size={14} className="animate-pulse" /> : <VolumeX size={14} />}
-                  <span className="hidden sm:inline">{modalAudioEnabled ? 'Audio Activo' : 'Silenciado'}</span>
+                  {modalAudioEnabled || isTalking ? <Volume2 size={14} className="animate-pulse" /> : <VolumeX size={14} />}
+                  <span className="hidden sm:inline">{modalAudioEnabled || isTalking ? 'Audio Activo' : 'Silenciado'}</span>
                 </button>
+
+                {/* Botón Intercomunicador / Hablar por Micrófono (Ezviz H6c / H8c / Hikvision / Dahua) */}
+                {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' && (
+                  <button 
+                    type="button"
+                    onClick={async () => {
+                      if (!isTalking) {
+                        try {
+                          if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                            await navigator.mediaDevices.getUserMedia({ audio: true });
+                          }
+                          setIsTalking(true);
+                          setModalAudioEnabled(true);
+                        } catch (err) {
+                          alert('No se pudo acceder al micrófono. Por favor asegúrate de permitir el acceso al micrófono en tu navegador.');
+                        }
+                      } else {
+                        setIsTalking(false);
+                      }
+                    }}
+                    className={`p-2 rounded-lg transition-all text-xs font-bold flex items-center gap-1.5 active:scale-95 border cursor-pointer ${
+                      isTalking 
+                        ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-lg shadow-red-600/40 animate-pulse' 
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border-zinc-700/50'
+                    }`}
+                    title={isTalking ? "Detener transmisión de voz" : "Hablar por el altavoz de la cámara"}
+                  >
+                    {isTalking ? <Mic size={14} className="text-white animate-bounce" /> : <Mic size={14} className="text-red-400" />}
+                    <span className="hidden sm:inline">{isTalking ? '🔴 Transmitiendo Voz' : '🎙️ Hablar por Cámara'}</span>
+                  </button>
+                )}
 
                 {/* Botón Ajuste de Pantalla (Proporcional vs Llenar) */}
                 <button
@@ -1218,8 +1413,44 @@ const CameraWall = () => {
                   <Move size={14} />
                 </button>
 
+                {/* Conmutador de Calidad SD (Fluido / Sub-stream) vs HD (Alta Definición / Main-stream) */}
+                {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' && (
+                  <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800 items-center text-xs font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModalQuality('sd');
+                        setModalStreamKey(prev => prev + 1);
+                      }}
+                      className={`px-2.5 py-1 rounded transition-all cursor-pointer ${
+                        modalQuality === 'sd' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'
+                      }`}
+                      title="Calidad Fluida: Sub-stream ligero y bajo consumo de red"
+                    >
+                      SD Fluido
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModalQuality('hd');
+                        setModalStreamKey(prev => prev + 1);
+                      }}
+                      className={`px-2.5 py-1 rounded transition-all cursor-pointer ${
+                        modalQuality === 'hd' ? 'bg-emerald-600 text-white shadow' : 'text-zinc-400 hover:text-white'
+                      }`}
+                      title="Calidad HD: Flujo Principal en Alta Definición 1080p/4K"
+                    >
+                      HD Máx
+                    </button>
+                  </div>
+                )}
+
                 <button 
-                  onClick={() => setZoomedCamera(null)}
+                  onClick={() => {
+                    setZoomedCamera(null);
+                    setIsTalking(false);
+                    setModalAudioEnabled(false);
+                  }}
                   className="bg-zinc-800 hover:bg-red-600 text-zinc-300 hover:text-white px-3.5 py-1.5 rounded-lg font-medium transition-all text-xs active:scale-95 border border-zinc-700/50 cursor-pointer"
                 >
                   Cerrar
@@ -1241,6 +1472,7 @@ const CameraWall = () => {
                       ...prevCam,
                       url: `${api.defaults.baseURL}/cameras/${prevCam.id}/snapshot?t=${Date.now()}`
                     });
+                    setIsTalking(false);
                     setModalAudioEnabled(false);
                     setModalStreamKey(prev => prev + 1);
                   }}
@@ -1255,12 +1487,12 @@ const CameraWall = () => {
               <div className="w-full h-full max-w-full max-h-full flex items-center justify-center relative bg-black">
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' ? (
                   <iframe 
-                    key={`modal-stream-${zoomedCamera.id}-${modalStreamKey}-${modalAudioEnabled ? 'audio' : 'mute'}-${videoFit}`}
-                    src={`/player.html?src=camera_${zoomedCamera.id}&muted=${modalAudioEnabled ? '0' : '1'}&fit=${videoFit}`} 
+                    key={`modal-stream-${zoomedCamera.id}-${modalQuality}-${modalStreamKey}-${modalAudioEnabled || isTalking ? 'audio' : 'mute'}-${isTalking ? 'talk' : 'notalk'}-${videoFit}`}
+                    src={`/player.html?src=${modalQuality === 'hd' ? `camera_${zoomedCamera.id}_hd` : `camera_${zoomedCamera.id}`}&muted=${modalAudioEnabled || isTalking ? '0' : '1'}&talk=${isTalking ? '1' : '0'}&fit=${videoFit}`} 
                     title={zoomedCamera.name}
                     className="w-full h-full max-h-full max-w-full border-0 z-10"
                     scrolling="no"
-                    allow="autoplay; fullscreen"
+                    allow="autoplay; fullscreen; microphone *"
                   />
                 ) : (
                   <img 
@@ -1268,6 +1500,62 @@ const CameraWall = () => {
                     alt={zoomedCamera.name} 
                     className={`w-full h-full max-h-full max-w-full ${videoFit === 'cover' ? 'object-cover' : 'object-contain'}`}
                   />
+                )}
+
+                {/* Floating Intercom Control Bar (Overlay en la parte inferior del video) */}
+                {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' && (
+                  <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 pointer-events-auto">
+                    {isTalking ? (
+                      <div className="bg-red-950/95 border-2 border-red-500/80 backdrop-blur-md rounded-2xl px-6 py-3 shadow-2xl flex items-center gap-4 animate-in slide-in-from-bottom-3 duration-300">
+                        <div className="flex items-center gap-2">
+                          <span className="w-3.5 h-3.5 rounded-full bg-red-500 animate-ping" />
+                          <Mic size={20} className="text-red-400 animate-bounce" />
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-xs font-black text-white tracking-wide uppercase flex items-center gap-2">
+                            TRANSMITIENDO VOZ A LA CÁMARA
+                            <span className="bg-red-600 text-[10px] px-1.5 py-0.5 rounded font-mono font-bold">EN VIVO</span>
+                          </span>
+                          <span className="text-[11px] text-red-200">
+                            Tu voz se reproduce en el altavoz de la cámara ({zoomedCamera.name})
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setIsTalking(false)}
+                          className="bg-red-600 hover:bg-red-500 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-lg transition-all active:scale-95 border border-red-300 cursor-pointer flex items-center gap-1.5"
+                        >
+                          <MicOff size={14} />
+                          <span>Silenciar Micrófono</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                              await navigator.mediaDevices.getUserMedia({ audio: true });
+                            }
+                            setIsTalking(true);
+                            setModalAudioEnabled(true);
+                          } catch (err) {
+                            alert('No se pudo acceder al micrófono. Por favor permite el acceso al micrófono en el navegador para hablar por la cámara.');
+                          }
+                        }}
+                        className="bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-zinc-700/80 hover:border-red-500/60 backdrop-blur-md rounded-full px-5 py-2.5 shadow-2xl flex items-center gap-3 transition-all hover:scale-105 active:scale-95 cursor-pointer group"
+                        title="Presiona para hablar por el altavoz de esta cámara"
+                      >
+                        <div className="w-8 h-8 rounded-full bg-red-600/20 group-hover:bg-red-600 flex items-center justify-center transition-colors text-red-400 group-hover:text-white">
+                          <Mic size={16} />
+                        </div>
+                        <div className="flex flex-col text-left">
+                          <span className="text-xs font-bold group-hover:text-red-400 transition-colors">Hablar por la Cámara</span>
+                          <span className="text-[10px] text-zinc-400">Intercomunicador bidireccional (Ezviz H6c / H8c / IP)</span>
+                        </div>
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -1283,6 +1571,7 @@ const CameraWall = () => {
                       ...nextCam,
                       url: `${api.defaults.baseURL}/cameras/${nextCam.id}/snapshot?t=${Date.now()}`
                     });
+                    setIsTalking(false);
                     setModalAudioEnabled(false);
                     setModalStreamKey(prev => prev + 1);
                   }}

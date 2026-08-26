@@ -283,8 +283,8 @@ async def reboot_device(
     device = session.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
-    if device.brand not in (Brand.HIKVISION, Brand.EZVIZ):
-        raise HTTPException(status_code=400, detail="Reboot only supported for Hikvision/Ezviz devices")
+    if device.brand not in (Brand.HIKVISION, Brand.EZVIZ, Brand.DAHUA, Brand.HILOOK):
+        raise HTTPException(status_code=400, detail="Reboot only supported for Hikvision/Ezviz/Dahua devices")
     
     try:
         driver = HikvisionDriver(device)
@@ -298,9 +298,9 @@ async def reboot_device(
             )
             session.add(report)
             session.commit()
-            return {"ok": True, "message": "Comando de reinicio enviado con éxito"}
+            return {"ok": True, "message": f"Comando de reinicio enviado exitosamente al grabador {device.name}"}
         else:
-            raise HTTPException(status_code=500, detail="El dispositivo rechazó el comando de reinicio")
+            raise HTTPException(status_code=500, detail="El dispositivo rechazó el comando de reinicio o requiere permisos especiales")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al reiniciar: {str(e)}")
 
@@ -315,8 +315,8 @@ async def shutdown_device(
     device = session.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
-    if device.brand not in (Brand.HIKVISION, Brand.EZVIZ):
-        raise HTTPException(status_code=400, detail="Shutdown only supported for Hikvision/Ezviz devices")
+    if device.brand not in (Brand.HIKVISION, Brand.EZVIZ, Brand.DAHUA, Brand.HILOOK):
+        raise HTTPException(status_code=400, detail="Shutdown only supported for Hikvision/Ezviz/Dahua devices")
     
     try:
         driver = HikvisionDriver(device)
@@ -330,7 +330,7 @@ async def shutdown_device(
             )
             session.add(report)
             session.commit()
-            return {"ok": True, "message": "Comando de apagado enviado con éxito"}
+            return {"ok": True, "message": f"Comando de apagado enviado al grabador {device.name}"}
         else:
             raise HTTPException(status_code=500, detail="El dispositivo rechazó el comando de apagado (algunos modelos no lo soportan por software)")
     except Exception as e:
@@ -465,10 +465,47 @@ async def refresh_all_devices(
             dev_obj.hdd_status = storage_info.get("hdd_status", dev_obj.hdd_status)
             dev_obj.hdd_capacity_total_gb = storage_info.get("total_gb", dev_obj.hdd_capacity_total_gb)
             dev_obj.hdd_capacity_free_gb = storage_info.get("free_gb", dev_obj.hdd_capacity_free_gb)
+            dev_obj.storage_media_type = storage_info.get("media_type", dev_obj.storage_media_type)
 
         session.add(dev_obj)
 
     session.commit()
     return {"ok": True, "message": "Dispositivos actualizados en tiempo real"}
+
+
+@router.post("/{device_id}/sync-storage")
+async def sync_device_storage(
+    *,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_operator_or_admin),
+    device_id: int
+) -> Any:
+    device = session.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Dispositivo no encontrado")
+
+    try:
+        driver = HikvisionDriver(device)
+        storage_info = await driver.get_storage_status()
+        
+        device.hdd_status = storage_info.get("hdd_status", device.hdd_status)
+        device.hdd_capacity_total_gb = storage_info.get("total_gb", device.hdd_capacity_total_gb)
+        device.hdd_capacity_free_gb = storage_info.get("free_gb", device.hdd_capacity_free_gb)
+        device.storage_media_type = storage_info.get("media_type", device.storage_media_type)
+        
+        session.add(device)
+        session.commit()
+        session.refresh(device)
+        
+        return {
+            "ok": True,
+            "message": f"Almacenamiento de '{device.name}' verificado ({device.storage_media_type}): {storage_info.get('free_gb', 0)} GB libres de {storage_info.get('total_gb', 0)} GB",
+            "storage": storage_info,
+            "device": device
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al verificar almacenamiento: {str(e)}")
+
+
 
 

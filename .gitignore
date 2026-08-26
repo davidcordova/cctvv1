@@ -49,5 +49,11 @@ Thumbs.db
 .DS_Store
 Output/
 backend/storage/
+storage/
 backend/scratch_*.py
+*.crt
+*.key
+backend/mediamtx.yml
+backend/test_mediamtx.yml
+backend/app/core/mediamtx.py
 

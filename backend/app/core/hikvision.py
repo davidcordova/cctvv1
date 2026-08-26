@@ -1,7 +1,14 @@
-import httpx
+import re
+import socket
+import base64
+import hashlib
+import asyncio
 import urllib.parse
 import xml.etree.ElementTree as ET
-from typing import List, Dict, Optional
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+import httpx
+
 from app.models.models import Device, Brand
 
 
@@ -12,17 +19,11 @@ def generate_rtsp_url(host: str, username: str, password: str, channel_id: int, 
 
     brand_str = str(brand).lower()
     if "dahua" in brand_str:
-        # Formato Dahua: /cam/realmonitor?channel=1&subtype=0
-        chan_num = channel_id
-        if chan_num >= 100 and chan_num % 100 == 1:
-            chan_num = chan_num // 100
+        chan_num = channel_id if channel_id < 100 else (channel_id // 100)
         return f"rtsp://{encoded_user}:{encoded_pass}@{host}:554/cam/realmonitor?channel={chan_num}&subtype=0"
     else:
-        # Formato Hikvision / Ezviz / HiLook / Uniview / Genérico: /Streaming/Channels/101
-        chan_str = str(channel_id)
-        if not chan_str.endswith("01") and channel_id < 100:
-            chan_str = f"{channel_id}01"
-        return f"rtsp://{encoded_user}:{encoded_pass}@{host}:554/Streaming/Channels/{chan_str}"
+        chan_num = channel_id if channel_id < 100 else (channel_id // 100)
+        return f"rtsp://{encoded_user}:{encoded_pass}@{host}:554/Streaming/Channels/{chan_num}01"
 
 
 def generate_substream_url(host: str, username: str, password: str, channel_id: int, brand: str) -> str:
@@ -32,28 +33,22 @@ def generate_substream_url(host: str, username: str, password: str, channel_id: 
 
     brand_str = str(brand).lower()
     if "dahua" in brand_str:
-        # Formato Dahua: /cam/realmonitor?channel=1&subtype=1
-        chan_num = channel_id
-        if chan_num >= 100:
-            chan_num = chan_num // 100
+        chan_num = channel_id if channel_id < 100 else (channel_id // 100)
         return f"rtsp://{encoded_user}:{encoded_pass}@{host}:554/cam/realmonitor?channel={chan_num}&subtype=1"
     else:
-        # Formato Hikvision / Ezviz / HiLook / Uniview / Genérico: /Streaming/Channels/102
-        chan_str = str(channel_id)
-        if not chan_str.endswith("02") and channel_id < 100:
-            chan_str = f"{channel_id}02"
-        return f"rtsp://{encoded_user}:{encoded_pass}@{host}:554/Streaming/Channels/{chan_str}"
+        chan_num = channel_id if channel_id < 100 else (channel_id // 100)
+        return f"rtsp://{encoded_user}:{encoded_pass}@{host}:554/Streaming/Channels/{chan_num}02"
 
 
-WORKING_SNAPSHOT_ENDPOINTS: Dict[str, tuple] = {}
+WORKING_SNAPSHOT_ENDPOINTS: Dict[str, Tuple[int, str]] = {}
 
 
 class HikvisionDriver:
     def __init__(self, device: Device):
         self.device = device
-        # Determinar lista de puertos HTTP probables (si indicaron puerto SDK 8000, probar 80 primero)
-        if device.port == 8000:
-            self.http_ports = [80, 8080, 8000]
+        # Determinar lista de puertos HTTP probables
+        if device.port in (8000, 37777):
+            self.http_ports = [80, 8080, device.port]
         else:
             self.http_ports = [device.port, 80, 8080]
         # Quitar duplicados manteniendo orden
@@ -74,10 +69,13 @@ class HikvisionDriver:
         return await client.request(method, url, auth=self.auth_basic, **kwargs)
 
     async def _fetch(self, client: httpx.AsyncClient, method: str, path: str, **kwargs) -> httpx.Response:
-        """Intenta la petición en los puertos HTTP disponibles."""
+        """Intenta la petición en los puertos HTTP disponibles respetando si es ruta ISAPI o CGI directo."""
         last_exception = None
         for port in self.http_ports:
-            url = f"http://{self.device.host}:{port}/ISAPI{path}"
+            if path.startswith("/cgi-bin") or path.startswith("http"):
+                url = f"http://{self.device.host}:{port}{path}"
+            else:
+                url = f"http://{self.device.host}:{port}/ISAPI{path}"
             try:
                 res = await self._fetch_url(client, method, url, **kwargs)
                 if res.status_code < 500:
@@ -86,11 +84,25 @@ class HikvisionDriver:
                 last_exception = e
         if last_exception:
             raise last_exception
-        raise ConnectionError(f"No se pudo conectar a {self.device.host} en ningún puerto ISAPI ({self.http_ports})")
+        raise ConnectionError(f"No se pudo conectar a {self.device.host} en ningún puerto ({self.http_ports})")
 
     async def get_device_info(self) -> Dict:
-        """Obtiene información básica del dispositivo."""
-        async with httpx.AsyncClient(timeout=1.5) as client:
+        """Obtiene información básica del dispositivo (soporta Hikvision y Dahua)."""
+        brand_str = str(self.device.brand).lower()
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            if "dahua" in brand_str:
+                try:
+                    res = await self._fetch(client, "GET", "/cgi-bin/magicBox.cgi?action=getSystemInfo")
+                    if res.status_code == 200:
+                        info = {}
+                        for line in res.text.splitlines():
+                            if "=" in line:
+                                k, v = line.split("=", 1)
+                                info[k.strip()] = v.strip()
+                        return info
+                except Exception:
+                    pass
+
             response = await self._fetch(client, "GET", "/System/deviceInfo")
             response.raise_for_status()
             content_type = response.headers.get("Content-Type", "")
@@ -108,14 +120,32 @@ class HikvisionDriver:
             return response.json()
 
     async def get_channels(self) -> List[Dict]:
-        """Obtiene la lista de canales/cámaras disponibles probando múltiples endpoints ISAPI de NVR/DVR."""
-        async with httpx.AsyncClient(timeout=1.5) as client:
+        """Obtiene la lista de canales disponibles probando endpoints de Dahua (CGI) e Hikvision (ISAPI)."""
+        brand_str = str(self.device.brand).lower()
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            # 1. Probar endpoint de Dahua
+            if "dahua" in brand_str:
+                try:
+                    res = await self._fetch(client, "GET", "/cgi-bin/configManager.cgi?action=getConfig&name=ChannelTitle")
+                    if res.status_code == 200:
+                        channels = []
+                        for line in res.text.splitlines():
+                            m = re.search(r"ChannelTitle\[(\d+)\]\.Name=(.*)", line)
+                            if m:
+                                ch_idx = int(m.group(1)) + 1
+                                ch_name = m.group(2).strip() or f"Cámara {ch_idx}"
+                                channels.append({"id": ch_idx, "name": ch_name})
+                        if channels:
+                            return sorted(channels, key=lambda c: c["id"])
+                except Exception:
+                    pass
+
+            # 2. Probar endpoints ISAPI de Hikvision / Ezviz
             endpoints = [
                 "/Streaming/channels",
                 "/ContentMgmt/InputProxy/channels",
                 "/System/Video/inputs/channels"
             ]
-
             for endpoint in endpoints:
                 try:
                     response = await self._fetch(client, "GET", endpoint)
@@ -123,9 +153,8 @@ class HikvisionDriver:
                         channels = self._parse_channels_xml(response.text)
                         if channels:
                             return channels
-                except Exception as e:
-                    print(f"Error fetching channels from {endpoint}: {e}")
-
+                except Exception:
+                    pass
             return []
 
     def _parse_channels_xml(self, xml_text: str) -> List[Dict]:
@@ -166,15 +195,18 @@ class HikvisionDriver:
             return []
 
     async def get_snapshot(self, channel_id: int) -> bytes:
-        """Obtiene una captura (JPEG) probando varios patrones de URL de canal con caché de endpoint exitoso."""
+        """Obtiene una captura (JPEG) probando varios patrones de URL con caché de endpoint exitoso."""
         cache_key = f"{self.device.host}:{channel_id}"
-        
         brand_str = str(self.device.brand).lower()
+
         if "dahua" in brand_str:
             chan_num = channel_id
             if chan_num >= 100 and chan_num % 100 == 1:
                 chan_num = chan_num // 100
-            endpoints = [f"/cgi-bin/snapshot.cgi?channel={chan_num}"]
+            endpoints = [
+                f"/cgi-bin/snapshot.cgi?channel={chan_num}",
+                f"/cgi-bin/snapshot.cgi?channel={chan_num}&type=0"
+            ]
         else:
             chan_str = str(channel_id)
             candidates = []
@@ -195,16 +227,16 @@ class HikvisionDriver:
         if cache_key in WORKING_SNAPSHOT_ENDPOINTS:
             cached_port, cached_ep = WORKING_SNAPSHOT_ENDPOINTS[cache_key]
             url = f"http://{self.device.host}:{cached_port}{cached_ep if cached_ep.startswith('/cgi-bin') else '/ISAPI' + cached_ep}"
-            async with httpx.AsyncClient(timeout=1.0) as client:
+            async with httpx.AsyncClient(timeout=1.2) as client:
                 try:
                     res = await self._fetch_url(client, "GET", url)
                     if res.status_code == 200 and len(res.content) > 100:
                         return res.content
                 except Exception:
-                    del WORKING_SNAPSHOT_ENDPOINTS[cache_key]
+                    WORKING_SNAPSHOT_ENDPOINTS.pop(cache_key, None)
 
-        # 2. Probar candidatos con timeout rápido (máx 0.8s por petición)
-        async with httpx.AsyncClient(timeout=0.8) as client:
+        # 2. Probar candidatos con timeout rápido (máx 1.0s por petición)
+        async with httpx.AsyncClient(timeout=1.0) as client:
             for port in self.http_ports:
                 for ep in endpoints:
                     url = f"http://{self.device.host}:{port}{ep if ep.startswith('/cgi-bin') else '/ISAPI' + ep}"
@@ -218,7 +250,6 @@ class HikvisionDriver:
 
         raise ValueError(f"No se pudo obtener imagen para canal {channel_id} en {self.device.host}")
 
-
     def get_rtsp_url(self, channel_id: int) -> str:
         """Genera la URL RTSP para un canal específico delegando en generate_rtsp_url."""
         return generate_rtsp_url(
@@ -231,8 +262,27 @@ class HikvisionDriver:
 
     async def get_device_time(self) -> Dict:
         """Obtiene la fecha y hora configurada en el dispositivo y calcula el desfase con el servidor."""
-        from datetime import datetime
+        brand_str = str(self.device.brand).lower()
         async with httpx.AsyncClient(timeout=2.5) as client:
+            # Dahua time
+            if "dahua" in brand_str:
+                try:
+                    res = await self._fetch(client, "GET", "/cgi-bin/global.cgi?action=getCurrentTime")
+                    if res.status_code == 200 and "result=" in res.text:
+                        time_str = res.text.split("result=")[-1].strip()
+                        dev_dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+                        now_local = datetime.now()
+                        offset_sec = int((dev_dt - now_local).total_seconds())
+                        return {
+                            "device_time": dev_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                            "offset_seconds": offset_sec,
+                            "is_drifted": abs(offset_sec) > 300,
+                            "raw": time_str
+                        }
+                except Exception as e:
+                    print(f"Error fetching Dahua device time from {self.device.host}: {e}")
+
+            # Hikvision time
             now_local = datetime.now().astimezone()
             try:
                 response = await self._fetch(client, "GET", "/System/time")
@@ -247,11 +297,10 @@ class HikvisionDriver:
                                 dev_dt = dev_dt.replace(tzinfo=now_local.tzinfo)
                             offset_sec = int((dev_dt - now_local).total_seconds())
                         except Exception:
-                            # Fallback si no tiene formato estándar
                             clean_str = time_str.split("+")[0].split("-")[0] if "T" in time_str else time_str
                             dev_dt = datetime.fromisoformat(clean_str)
                             offset_sec = int((dev_dt - datetime.now()).total_seconds())
-                        
+
                         return {
                             "device_time": dev_dt.strftime("%Y-%m-%d %H:%M:%S"),
                             "offset_seconds": offset_sec,
@@ -270,11 +319,28 @@ class HikvisionDriver:
             }
 
     async def sync_time(self) -> Dict:
-        """Sincroniza la fecha y hora del dispositivo con la hora actual del servidor local."""
-        from datetime import datetime
+        """Sincroniza la fecha y hora del grabador con la hora actual del servidor local."""
         now = datetime.now()
-        iso_now = now.strftime("%Y-%m-%dT%H:%M:%S-05:00")
+        brand_str = str(self.device.brand).lower()
 
+        # Dahua Time Sync
+        if "dahua" in brand_str:
+            time_param = now.strftime("%Y-%m-%d %H:%M:%S")
+            time_encoded = urllib.parse.quote(time_param)
+            async with httpx.AsyncClient(timeout=3.5) as client:
+                try:
+                    res = await self._fetch(client, "GET", f"/cgi-bin/global.cgi?action=setCurrentTime&time={time_encoded}")
+                    if res.status_code == 200 and "OK" in res.text.upper():
+                        return {
+                            "success": True,
+                            "synced_time": time_param,
+                            "message": f"Hora del grabador Dahua {self.device.name} sincronizada exitosamente a las {now.strftime('%H:%M:%S')}."
+                        }
+                except Exception as e:
+                    print(f"Error syncing Dahua time: {e}")
+
+        # Hikvision / Ezviz Time Sync
+        iso_now = now.strftime("%Y-%m-%dT%H:%M:%S-05:00")
         xml_payload = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Time version="1.0" xmlns="http://www.hikvision.com/ver20/XMLSchema">
 <timeMode>manual</timeMode>
@@ -283,7 +349,6 @@ class HikvisionDriver:
 </Time>"""
 
         async with httpx.AsyncClient(timeout=3.5) as client:
-            last_err = None
             for port in self.http_ports:
                 url = f"http://{self.device.host}:{port}/ISAPI/System/time"
                 try:
@@ -294,113 +359,260 @@ class HikvisionDriver:
                             "synced_time": iso_now,
                             "message": f"Hora del grabador {self.device.name} sincronizada exitosamente a las {now.strftime('%H:%M:%S')} (Servidor Local)."
                         }
-                except Exception as e:
-                    last_err = e
+                except Exception:
+                    pass
 
-            # Si no responde por ISAPI pero está en línea
-            return {
-                "success": True,
-                "synced_time": iso_now,
-                "message": f"Hora calibrada correctamente con el servidor local a las {now.strftime('%H:%M:%S')}"
-            }
+        return {
+            "success": True,
+            "synced_time": iso_now,
+            "message": f"Hora calibrada correctamente con el servidor local a las {now.strftime('%H:%M:%S')}"
+        }
 
     async def get_storage_status(self) -> Dict:
-        """Verifica el estado del disco duro (HDD), capacidad y formato del grabador."""
-        async with httpx.AsyncClient(timeout=2.5) as client:
-            endpoints = ["/ContentMgmt/Storage", "/System/Storage/volumes", "/System/Storage/hdd"]
+        """Verifica el estado del almacenamiento (HDD SATA, MicroSD, SSD o NAS), capacidad y espacio libre real."""
+        brand_str = str(self.device.brand).lower()
+        dev_type_str = str(self.device.device_type).upper()
+
+        async with httpx.AsyncClient(timeout=3.5) as client:
+            # 1. Dahua Storage (CGI multi-partición /dev/sdaX)
+            if "dahua" in brand_str:
+                for cgi_ep in ["/cgi-bin/storageDevice.cgi?action=getDeviceAllInfo", "/cgi-bin/storageDevice.cgi?action=factory.getDeviceAllInfo"]:
+                    try:
+                        res = await self._fetch(client, "GET", cgi_ep)
+                        if res.status_code == 200 and ("TotalBytes" in res.text or "UsedBytes" in res.text):
+                            total_bytes = 0.0
+                            used_bytes = 0.0
+                            has_error = False
+
+                            for line in res.text.splitlines():
+                                if "TotalBytes=" in line:
+                                    val_str = line.split("=")[-1].strip()
+                                    try:
+                                        total_bytes += float(val_str)
+                                    except ValueError:
+                                        pass
+                                elif "UsedBytes=" in line:
+                                    val_str = line.split("=")[-1].strip()
+                                    try:
+                                        used_bytes += float(val_str)
+                                    except ValueError:
+                                        pass
+                                elif "IsError=true" in line:
+                                    has_error = True
+
+                            if total_bytes > 0:
+                                total_gb = round(total_bytes / (1024**3), 2)
+                                used_gb = round(used_bytes / (1024**3), 2)
+                                free_gb = round(max(0.0, total_gb - used_gb), 2)
+                                is_recorder = "DVR" in dev_type_str or "NVR" in dev_type_str or (self.device.channel_count or 1) > 1
+                                media_type = "HDD SATA" if is_recorder else "MicroSD / SSD Local"
+                                status = "Dañado / Error SMART" if has_error else "Normal (Formato OK)"
+                                return {
+                                    "hdd_status": status,
+                                    "total_gb": total_gb,
+                                    "free_gb": free_gb,
+                                    "used_gb": used_gb,
+                                    "media_type": media_type
+                                }
+                    except Exception:
+                        pass
+
+            # 2. Hikvision / Ezviz Storage (ISAPI /ContentMgmt/Storage/hdd)
+            endpoints = ["/ContentMgmt/Storage/hdd", "/ContentMgmt/Storage", "/System/Storage/volumes", "/System/Storage/hdd"]
             for ep in endpoints:
                 try:
                     response = await self._fetch(client, "GET", ep)
                     if response.status_code == 200 and ("<" in response.text):
                         root = ET.fromstring(response.text)
-                        status_elem = root.find(".//{*}status") or root.find(".//status") or root.find(".//{*}hddStatus")
-                        cap_elem = root.find(".//{*}capacity") or root.find(".//capacity")
-                        free_elem = root.find(".//{*}freeSpace") or root.find(".//freeSpace")
+                        hdd_elements = root.findall(".//{*}hdd") or root.findall(".//hdd") or root.findall(".//{*}volume")
 
-                        status_val = status_elem.text.strip().lower() if status_elem is not None and status_elem.text else "ok"
-                        
-                        if status_val in ("ok", "normal", "active", "formatted"):
-                            hdd_status = "Normal (Formato OK)"
-                        elif status_val in ("unformatted", "not_initialized", "noformat"):
-                            hdd_status = "Sin Formato / No Inicializado"
-                        elif status_val in ("error", "smart_error", "damaged", "failed"):
-                            hdd_status = "Dañado / Error SMART"
-                        else:
-                            hdd_status = f"Estado: {status_val.capitalize()}"
+                        if hdd_elements:
+                            total_cap_mb = 0.0
+                            total_free_mb = 0.0
+                            detected_types = set()
+                            has_error = False
+                            unformatted = False
 
-                        total_gb = 2000.0
-                        free_gb = 0.0
-                        if cap_elem is not None and cap_elem.text and cap_elem.text.isdigit():
-                            val = int(cap_elem.text)
-                            total_gb = round(val / 1024, 0) if val > 10000 else float(val)
-                        if free_elem is not None and free_elem.text and free_elem.text.isdigit():
-                            val_f = int(free_elem.text)
-                            free_gb = round(val_f / 1024, 0) if val_f > 10000 else float(val_f)
+                            for hdd in hdd_elements:
+                                cap_elem = hdd.find(".//{*}capacity") or hdd.find("capacity")
+                                free_elem = hdd.find(".//{*}freeSpace") or hdd.find("freeSpace")
+                                type_elem = hdd.find(".//{*}hddType") or hdd.find("hddType") or hdd.find(".//{*}type")
+                                stat_elem = hdd.find(".//{*}status") or hdd.find("status")
 
-                        return {
-                            "hdd_status": hdd_status,
-                            "total_gb": total_gb,
-                            "free_gb": free_gb
-                        }
+                                if cap_elem is not None and cap_elem.text:
+                                    try:
+                                        total_cap_mb += float(cap_elem.text.strip())
+                                    except ValueError:
+                                        pass
+
+                                if free_elem is not None and free_elem.text:
+                                    try:
+                                        total_free_mb += float(free_elem.text.strip())
+                                    except ValueError:
+                                        pass
+
+                                if type_elem is not None and type_elem.text:
+                                    t_str = type_elem.text.strip().upper()
+                                    if "SATA" in t_str or "LOCAL" in t_str or "HDD" in t_str:
+                                        detected_types.add("HDD SATA")
+                                    elif "SD" in t_str or "MMC" in t_str:
+                                        detected_types.add("MicroSD Local")
+                                    elif "SSD" in t_str:
+                                        detected_types.add("SSD Local")
+                                    elif "NAS" in t_str or "NFS" in t_str or "SMB" in t_str:
+                                        detected_types.add("NAS / Red")
+
+                                if stat_elem is not None and stat_elem.text:
+                                    s_str = stat_elem.text.strip().lower()
+                                    if s_str in ("error", "smart_error", "damaged", "failed"):
+                                        has_error = True
+                                    elif s_str in ("unformatted", "not_initialized", "noformat"):
+                                        unformatted = True
+
+                            if total_cap_mb > 0:
+                                total_gb = round(total_cap_mb / 1024.0, 2)
+                                free_gb = round(total_free_mb / 1024.0, 2)
+                                used_gb = round(max(0.0, total_gb - free_gb), 2)
+                                media_type = ", ".join(detected_types) if detected_types else ("HDD SATA" if dev_type_str in ("DVR", "NVR") else "MicroSD Local")
+                                
+                                if has_error:
+                                    hdd_status = "Dañado / Error SMART"
+                                elif unformatted:
+                                    hdd_status = "Sin Formato / No Inicializado"
+                                else:
+                                    hdd_status = "Normal (Formato OK)"
+
+                                return {
+                                    "hdd_status": hdd_status,
+                                    "total_gb": total_gb,
+                                    "free_gb": free_gb,
+                                    "used_gb": used_gb,
+                                    "media_type": media_type
+                                }
+
+                        # Si la respuesta fue 200 pero la lista de discos está vacía (cámara IP sin MicroSD)
+                        if dev_type_str == "IPC" or (self.device.channel_count or 1) <= 1:
+                            return {
+                                "hdd_status": "Grabación Centralizada en NVR",
+                                "total_gb": 0.0,
+                                "free_gb": 0.0,
+                                "used_gb": 0.0,
+                                "media_type": "Sin Almacenamiento Local (Grabación Remota en NVR)"
+                            }
                 except Exception:
                     pass
 
-        # Fallback predeterminado según estado de conexión
+            # Si es cámara IP y no respondió endpoint de almacenamiento local
+            if dev_type_str == "IPC" or (self.device.channel_count or 1) <= 1:
+                return {
+                    "hdd_status": "Grabación Centralizada en NVR",
+                    "total_gb": 0.0,
+                    "free_gb": 0.0,
+                    "used_gb": 0.0,
+                    "media_type": "Sin Almacenamiento Local (Grabación Remota en NVR)"
+                }
+
+        # Fallback para dispositivos en línea
         if self.device.is_online:
             return {
                 "hdd_status": self.device.hdd_status or "Normal (Formato OK)",
-                "total_gb": self.device.hdd_capacity_total_gb or 2000.0,
-                "free_gb": self.device.hdd_capacity_free_gb or 0.0
+                "total_gb": self.device.hdd_capacity_total_gb or 0.0,
+                "free_gb": self.device.hdd_capacity_free_gb or 0.0,
+                "used_gb": max(0.0, (self.device.hdd_capacity_total_gb or 0.0) - (self.device.hdd_capacity_free_gb or 0.0)),
+                "media_type": self.device.storage_media_type or ("HDD SATA" if dev_type_str in ("DVR", "NVR") else "Sin Almacenamiento Local")
             }
         else:
             return {
                 "hdd_status": "Sin Conexión al Grabador",
                 "total_gb": 0.0,
-                "free_gb": 0.0
+                "free_gb": 0.0,
+                "used_gb": 0.0,
+                "media_type": "Desconectado"
             }
 
+    async def get_snapshot(self, channel: int) -> Optional[bytes]:
+        """Obtiene la captura JPEG de alta resolución directamente del hardware (CGI/ISAPI)."""
+        brand_str = str(self.device.brand).lower()
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            # 1. Dahua Snapshot
+            if "dahua" in brand_str:
+                for cgi_ep in [
+                    f"/cgi-bin/snapshot.cgi?channel={channel}",
+                    f"/cgi-bin/snapshot.cgi?channel={channel}&subtype=0",
+                    f"/cgi-bin/snapshot.cgi?channel={channel}&subtype=1"
+                ]:
+                    try:
+                        res = await self._fetch(client, "GET", cgi_ep)
+                        if res.status_code == 200 and len(res.content) > 1000:
+                            return res.content
+                    except Exception:
+                        pass
+
+            # 2. Hikvision / Ezviz / Hilook ISAPI Picture
+            candidates = [
+                f"/ISAPI/Streaming/channels/{channel}01/picture",
+                f"/ISAPI/Streaming/channels/{channel}02/picture",
+                f"/ISAPI/Streaming/channels/{channel}/picture",
+                f"/ISAPI/ContentMgmt/StreamingProxy/channels/{channel}01/picture",
+                f"/ISAPI/ContentMgmt/StreamingProxy/channels/{channel}/picture",
+                f"/Streaming/channels/{channel}01/picture"
+            ]
+            for ep in candidates:
+                try:
+                    res = await self._fetch(client, "GET", ep)
+                    if res.status_code == 200 and len(res.content) > 1000:
+                        return res.content
+                except Exception:
+                    pass
+
+        return None
+
     async def reboot(self) -> bool:
-        """Reinicia el dispositivo remotamente."""
+        """Reinicia el grabador remotamente vía ISAPI o CGI."""
         async with httpx.AsyncClient(timeout=5.0) as client:
-            try:
-                response = await self._fetch(client, "PUT", "/System/reboot")
-                if response.status_code in (200, 201):
-                    return True
-                else:
-                    raise ValueError(f"El dispositivo respondió con código de estado {response.status_code}.")
-            except httpx.RequestError as e:
-                raise ConnectionError(
-                    f"No se pudo conectar al puerto HTTP del dispositivo: {e}. "
-                    "Asegúrese de que el grabador tenga habilitada la administración HTTP local (Puerto 80)."
-                )
+            brand_str = str(self.device.brand).lower()
+            if "dahua" in brand_str:
+                try:
+                    res = await self._fetch(client, "GET", "/cgi-bin/magicBox.cgi?action=reboot")
+                    if res.status_code == 200:
+                        return True
+                except Exception:
+                    pass
+            else:
+                for endpoint in ["/System/reboot", "/ISAPI/System/reboot"]:
+                    try:
+                        res = await self._fetch(client, "PUT", endpoint)
+                        if res.status_code in (200, 201, 204):
+                            return True
+                    except Exception as e:
+                        print(f"Error reiniciando grabador {self.device.host}: {e}")
+        return False
 
     async def shutdown(self) -> bool:
-        """Apaga el dispositivo remotamente."""
+        """Apaga el grabador remotamente."""
         async with httpx.AsyncClient(timeout=5.0) as client:
-            try:
-                response = await self._fetch(client, "PUT", "/System/shutdown")
-                if response.status_code in (200, 201):
-                    return True
-                else:
-                    raise ValueError(f"El dispositivo rechazó el comando (Código {response.status_code}).")
-            except httpx.RequestError as e:
-                raise ConnectionError(
-                    f"No se pudo conectar al puerto HTTP del dispositivo: {e}. "
-                    "Asegúrese de que el grabador tenga habilitada la administración HTTP local (Puerto 80)."
-                )
+            brand_str = str(self.device.brand).lower()
+            if "dahua" in brand_str:
+                try:
+                    res = await self._fetch(client, "GET", "/cgi-bin/magicBox.cgi?action=shutdown")
+                    if res.status_code == 200:
+                        return True
+                except Exception:
+                    pass
+            else:
+                try:
+                    response = await self._fetch(client, "PUT", "/System/shutdown")
+                    if response.status_code in (200, 201, 204):
+                        return True
+                except Exception:
+                    pass
+        return False
 
 
-import socket
-import base64
-import hashlib
-import re
-import asyncio
-
-
-async def validate_device_credentials(host: str, port: int, user: str, pwd: str, brand: str = "Hikvision") -> tuple[bool, str]:
-    """Verifica si el host está accesible y si las credenciales son válidas vía HTTP (ISAPI) o RTSP."""
+async def validate_device_credentials(host: str, port: int, user: str, pwd: str, brand: str = "Hikvision") -> Tuple[bool, str]:
+    """Verifica si el host está accesible y si las credenciales son válidas vía HTTP (CGI/ISAPI) o RTSP."""
     # 1. Probar conectividad de socket
-    test_ports = [port, 80, 8000, 554]
+    test_ports = [port, 80, 37777, 8000, 554]
     seen = set()
     test_ports = [p for p in test_ports if not (p in seen or seen.add(p))]
 
@@ -418,19 +630,35 @@ async def validate_device_credentials(host: str, port: int, user: str, pwd: str,
     if not is_reachable:
         return False, f"No se pudo conectar a {host}. Verifica que la dirección IP sea correcta y el dispositivo esté encendido en la red."
 
-    # 2. Probar autenticación HTTP / ISAPI si hay puerto web
+    brand_str = str(brand).lower()
     http_ports = [p for p in [port, 80, 8080, 8000] if p != 554]
+    seen_hp = set()
+    http_ports = [p for p in http_ports if not (p in seen_hp or seen_hp.add(p))]
+
+    # 2. Probar autenticación HTTP (CGI para Dahua, ISAPI para Hikvision)
     async with httpx.AsyncClient(timeout=3.0) as client:
         for hp in http_ports:
-            try:
-                for auth in [httpx.DigestAuth(user, pwd), httpx.BasicAuth(user, pwd)]:
-                    res = await client.get(f"http://{host}:{hp}/ISAPI/System/deviceInfo", auth=auth)
-                    if res.status_code == 200:
-                        return True, "Dispositivo verificado y conectado exitosamente vía HTTP/ISAPI."
-                    elif res.status_code == 401:
-                        return False, "Error de autenticación: El usuario o la contraseña/código de verificación son incorrectos."
-            except Exception:
-                pass
+            if "dahua" in brand_str:
+                endpoints_to_try = [
+                    f"http://{host}:{hp}/cgi-bin/magicBox.cgi?action=getSystemInfo",
+                    f"http://{host}:{hp}/cgi-bin/configManager.cgi?action=getConfig&name=General"
+                ]
+            else:
+                endpoints_to_try = [
+                    f"http://{host}:{hp}/ISAPI/System/deviceInfo",
+                    f"http://{host}:{hp}/cgi-bin/magicBox.cgi?action=getSystemInfo"
+                ]
+
+            for ep in endpoints_to_try:
+                try:
+                    for auth in [httpx.DigestAuth(user, pwd), httpx.BasicAuth(user, pwd)]:
+                        res = await client.get(ep, auth=auth)
+                        if res.status_code == 200:
+                            return True, "Dispositivo verificado y conectado exitosamente vía HTTP/API."
+                        elif res.status_code == 401:
+                            return False, "Error de autenticación: El usuario o la contraseña son incorrectos."
+                except Exception:
+                    pass
 
     # 3. Probar autenticación RTSP (Puerto 554 o el puerto indicado)
     def _test_rtsp_sync():
@@ -439,7 +667,11 @@ async def validate_device_credentials(host: str, port: int, user: str, pwd: str,
         rtsp_p = port if port in [554, 8554] else 554
         try:
             s.connect((host, rtsp_p))
-            url = f"rtsp://{host}:{rtsp_p}/Streaming/Channels/101"
+            if "dahua" in brand_str:
+                url = f"rtsp://{host}:{rtsp_p}/cam/realmonitor?channel=1&subtype=0"
+            else:
+                url = f"rtsp://{host}:{rtsp_p}/Streaming/Channels/101"
+
             s.sendall(f"DESCRIBE {url} RTSP/1.0\r\nCSeq: 1\r\n\r\n".encode())
             resp1 = s.recv(2048).decode(errors="ignore")
 
@@ -460,7 +692,7 @@ async def validate_device_credentials(host: str, port: int, user: str, pwd: str,
                     if "200 OK" in resp2 or "404 Not Found" in resp2:
                         return True, "Credenciales RTSP verificadas exitosamente."
                     if "401 Unauthorized" in resp2:
-                        return False, "Error de autenticación: El usuario o la contraseña (código de verificación) son incorrectos."
+                        return False, "Error de autenticación: El usuario o la contraseña son incorrectos."
 
                 # Probar Basic
                 if "Basic" in resp1:
@@ -470,7 +702,7 @@ async def validate_device_credentials(host: str, port: int, user: str, pwd: str,
                     if "200 OK" in resp2 or "404 Not Found" in resp2:
                         return True, "Credenciales RTSP verificadas exitosamente."
                     if "401 Unauthorized" in resp2:
-                        return False, "Error de autenticación: El usuario o la contraseña (código de verificación) son incorrectos."
+                        return False, "Error de autenticación: El usuario o la contraseña son incorrectos."
 
             return True, "Conexión establecida con el dispositivo."
         except Exception:
@@ -481,6 +713,3 @@ async def validate_device_credentials(host: str, port: int, user: str, pwd: str,
     loop = asyncio.get_running_loop()
     ok, msg = await loop.run_in_executor(None, _test_rtsp_sync)
     return ok, msg
-
-
-

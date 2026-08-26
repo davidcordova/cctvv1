@@ -146,7 +146,7 @@ def update_camera(
     session.commit()
     session.refresh(camera)
     
-    # Sync WebRTC server config
+    # Sync WebRTC MediaMTX server config
     from app.core.go2rtc import sync_go2rtc_config
     sync_go2rtc_config()
     
@@ -157,7 +157,17 @@ def update_camera(
 async def get_webrtc_status():
     try:
         async with httpx.AsyncClient() as client:
-            res = await client.get("http://localhost:1984/api/streams", timeout=3.0)
+            res = await client.get("http://localhost:1984/api/streams", timeout=2.0)
             return {"available": res.status_code == 200}
     except Exception:
-        return {"available": False}
+        # Fallback: check TCP port 1984
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", 1984),
+                timeout=1.5
+            )
+            writer.close()
+            await writer.wait_closed()
+            return {"available": True}
+        except Exception:
+            return {"available": False}

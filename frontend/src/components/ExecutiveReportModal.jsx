@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
+import { formatStorageInfo } from '../utils/storageUtils';
 import { useAuth } from '../context/AuthContext';
 
 const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => {
@@ -374,24 +375,24 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
                 </div>
 
                 {/* ==================================================================== */}
-                {/* 2. RESUMEN EJECUTIVO Y DATOS ESTADÍSTICOS (KPIS)                     */}
+                {/* 2. RESUMEN EJECUTIVO Y SLA CONSOLIDADO                               */}
                 {/* ==================================================================== */}
-                <div className="space-y-3.5 page-break-avoid">
+                <div className="space-y-3 page-break-avoid">
                   <div className="flex items-center gap-2 border-b border-slate-300 pb-1">
                     <span className="bg-slate-900 text-white w-5 h-5 rounded-full inline-flex items-center justify-center text-[10px] font-bold">1</span>
                     <h2 className="text-xs font-black uppercase tracking-wider text-slate-900">
-                      Resumen Ejecutivo y Datos Estadísticos (KPIs)
+                      Resumen Ejecutivo y Nivel de Cumplimiento (SLA)
                     </h2>
                   </div>
 
-                  {/* Diagnóstico en Prosa Ejecutiva */}
-                  <p className="text-xs text-slate-700 text-justify leading-relaxed bg-slate-50 p-3 rounded border border-slate-200">
-                    El presente informe técnico valida la <strong>efectividad de grabación y salud del almacenamiento en disco duro</strong> sobre las cámaras físicamente instaladas en servicio. 
+                  <p className="text-slate-700 text-justify text-[9pt] leading-normal">
+                    El presente informe técnico valida la <strong>efectividad de grabación, salud del almacenamiento y respaldo de evidencia fotográfica</strong> sobre las cámaras físicamente instaladas en servicio. 
                     Actualmente, el sistema opera con un <strong>Nivel de Servicio Consolidado (SLA) del {kpis.overall_sla}%</strong>. 
                     Se registran <strong>{kpis.online_devices} de {kpis.total_devices} grabadores en línea ({kpis.device_availability_pct}%)</strong>, 
                     con <strong>{kpis.installed_cameras} cámaras físicamente instaladas de una capacidad total de {kpis.total_ports || 32} puertos ({kpis.free_ports || 0} puertos libres en reserva)</strong>. 
-                    El <strong>{kpis.recording_compliance_pct}% de las cámaras instaladas ({kpis.recording_cameras} de {kpis.installed_cameras})</strong> se encuentra en modalidad de grabación continua activa (24/7). 
-                    El <strong>{kpis.hdd_health_pct}% de los grabadores ({kpis.hdd_healthy_devices}/{kpis.total_devices})</strong> cuenta con discos duros en formato correcto y espacio disponible.
+                    El <strong>{kpis.recording_compliance_pct}% de las cámaras instaladas ({kpis.recording_cameras} de {kpis.installed_cameras})</strong> se encuentra en grabación continua activa (24/7), 
+                    con un <strong>{kpis.evidence_compliance_pct || 100}% de evidencia fotográfica verificada ({kpis.verified_cameras_count || kpis.installed_cameras} de {kpis.installed_cameras})</strong>. 
+                    El <strong>{kpis.hdd_health_pct}% de los grabadores ({kpis.hdd_healthy_devices}/{kpis.total_devices})</strong> cuenta con almacenamiento en formato correcto.
                     {kpis.drifted_devices_count > 0 ? (
                       ` ⚠️ Atención: Se identificaron ${kpis.drifted_devices_count} grabadores con desfase horario > 5 min respecto al servidor.`
                     ) : (
@@ -416,13 +417,13 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
                     </div>
 
                     <div className="border border-slate-300 p-2.5 rounded-lg bg-slate-50 text-center">
-                      <div className="text-[9.5px] uppercase font-bold text-slate-500 tracking-wide">Puertos DVR</div>
-                      <div className="text-xl font-black text-slate-900 mt-0.5">{kpis.installed_cameras}/{kpis.total_ports || 32}</div>
-                      <div className="text-[8.5px] font-bold text-slate-600 uppercase mt-0.5">{kpis.free_ports || 0} Libres (Reserva)</div>
+                      <div className="text-[9.5px] uppercase font-bold text-slate-500 tracking-wide">Evidencia Visual</div>
+                      <div className="text-xl font-black text-blue-700 mt-0.5">{kpis.verified_cameras_count || kpis.installed_cameras}/{kpis.installed_cameras}</div>
+                      <div className="text-[8.5px] font-bold text-emerald-700 uppercase mt-0.5">{kpis.evidence_compliance_pct || 100}% Fotos OK</div>
                     </div>
 
                     <div className="border border-slate-300 p-2.5 rounded-lg bg-slate-50 text-center">
-                      <div className="text-[9.5px] uppercase font-bold text-slate-500 tracking-wide">Discos Duros (HDD)</div>
+                      <div className="text-[9.5px] uppercase font-bold text-slate-500 tracking-wide">Discos Duros</div>
                       <div className="text-xl font-black text-emerald-700 mt-0.5">{kpis.hdd_healthy_devices}/{kpis.total_devices}</div>
                       <div className="text-[8.5px] font-bold text-slate-600 uppercase mt-0.5">Formato Correcto</div>
                     </div>
@@ -478,15 +479,25 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
                               </td>
 
                               <td className="p-2 border-r border-slate-200">
-                                <div className="flex items-center gap-1 font-semibold">
-                                  <HardDrive size={12} className={hddOk ? 'text-emerald-700' : 'text-rose-700'} />
-                                  <span className={hddOk ? 'text-emerald-900' : 'text-rose-900 font-bold'}>
-                                    {dev.hdd_status}
-                                  </span>
-                                </div>
-                                <div className="text-[8.5px] text-slate-500 font-mono mt-0.5">
-                                  Capacidad: {dev.hdd_total_gb} GB
-                                </div>
+                                {(() => {
+                                  const st = formatStorageInfo(dev.hdd_total_gb, dev.hdd_free_gb, dev.storage_media_type, dev.hdd_status, dev.is_online);
+                                  return (
+                                    <>
+                                      <div className="flex items-center gap-1 font-semibold">
+                                        <HardDrive size={12} className={hddOk ? 'text-emerald-700' : 'text-rose-700'} />
+                                        <span className={hddOk ? 'text-emerald-900' : 'text-rose-900 font-bold'}>
+                                          {st.badge}
+                                        </span>
+                                      </div>
+                                      <div className="text-[8.5px] font-bold text-slate-800 font-mono mt-0.5">
+                                        {st.primary}
+                                      </div>
+                                      <div className="text-[8px] text-slate-500 font-mono">
+                                        {st.secondary}
+                                      </div>
+                                    </>
+                                  );
+                                })()}
                               </td>
 
                               <td className="p-2 border-r border-slate-200 font-mono">
@@ -577,6 +588,11 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
                                     {!isInstalled ? '⚪ EN RESERVA' : isRec ? '🔴 GRABANDO' : '⚠️ NO GRABA'}
                                   </span>
                                 </div>
+                                {isInstalled && cam.storage_location && (
+                                  <div className="text-[7.5px] text-slate-500 font-mono truncate mt-0.5" title={cam.storage_location}>
+                                    💾 {cam.storage_location}
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -655,7 +671,9 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
                                       {cam.name}
                                     </p>
                                     <div className="flex justify-between items-center text-[7.5px] font-mono text-slate-500 mt-1">
-                                      <span>{cam.is_active ? 'SEÑAL OK' : 'SIN SEÑAL'}</span>
+                                      <span className={cam.snapshot_verified !== false && cam.has_video_signal ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold'}>
+                                        {cam.snapshot_verified !== false && cam.has_video_signal ? '✓ FOTO VERIFICADA' : '⚠️ SIN IMAGEN'}
+                                      </span>
                                       <span className={cam.is_recording ? 'text-rose-700 font-bold' : 'text-amber-700 font-semibold'}>
                                         {cam.is_recording ? 'GRABANDO 24/7' : 'SIN GRABACIÓN'}
                                       </span>

@@ -1,6 +1,12 @@
 import asyncio
 import os
 import sys
+
+# Asegurar que el directorio backend esté en sys.path
+backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+
 import webbrowser
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -33,19 +39,19 @@ async def check_connectivity(host: str, port: int) -> bool:
     return False
 
 
-async def _check_single_device(device: Device):
+async def _check_single_device(device: Device, do_deep_check: bool = False):
     from app.core.hikvision import HikvisionDriver
     from datetime import datetime
     is_now_online = await check_connectivity(device.host, device.port)
     time_info = None
     storage_info = None
 
-    if is_now_online:
+    if is_now_online and do_deep_check:
         try:
             driver = HikvisionDriver(device)
-            # Consultar hora y almacenamiento con timeout protegido
-            time_info = await asyncio.wait_for(driver.get_device_time(), timeout=3.0)
-            storage_info = await asyncio.wait_for(driver.get_storage_status(), timeout=3.0)
+            # Consultar hora y almacenamiento con timeout corto protegido
+            time_info = await asyncio.wait_for(driver.get_device_time(), timeout=2.5)
+            storage_info = await asyncio.wait_for(driver.get_storage_status(), timeout=2.5)
         except Exception:
             pass
 
@@ -53,25 +59,35 @@ async def _check_single_device(device: Device):
 
 
 async def monitor_devices_loop():
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
     from datetime import datetime
+    iteration = 0
     while True:
         try:
+            iteration += 1
+            # Realizar inspección profunda (disco/hora) solo cada 10 ciclos (~10 minutos)
+            do_deep_check = (iteration % 10 == 1)
+
             # 1. Obtener lista de dispositivos
             with Session(engine) as session:
                 devices = session.exec(select(Device)).all()
                 device_copies = [Device(**d.model_dump()) for d in devices]
 
             if device_copies:
-                results = await asyncio.gather(
-                    *[_check_single_device(d) for d in device_copies],
-                    return_exceptions=True
-                )
+                # Comprobar dispositivos secuencialmente con micro-pausas para no saturar grabadores ni la red
+                results = []
+                for d in device_copies:
+                    try:
+                        res = await _check_single_device(d, do_deep_check=do_deep_check)
+                        results.append(res)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.3)
                 
                 # 2. Guardar cambios en BD en una sesión breve
                 with Session(engine) as session:
                     for res in results:
-                        if isinstance(res, Exception):
+                        if not res or isinstance(res, Exception):
                             continue
                         device, is_now_online, time_info, storage_info = res
                         db_device = session.get(Device, device.id)
@@ -89,7 +105,7 @@ async def monitor_devices_loop():
                             )
                             session.add(report)
 
-                        # Actualizar métricas reales de tiempo
+                        # Actualizar métricas reales de tiempo si se obtuvieron
                         if time_info and is_now_online:
                             prev_offset = db_device.time_offset_seconds or 0
                             new_offset = time_info.get("offset_seconds", 0)
@@ -109,17 +125,18 @@ async def monitor_devices_loop():
                                 )
                                 session.add(report_drift)
 
-                        # Actualizar almacenamiento real
+                        # Actualizar almacenamiento real si se obtuvo
                         if storage_info and is_now_online:
                             db_device.hdd_status = storage_info.get("hdd_status", db_device.hdd_status)
                             db_device.hdd_capacity_total_gb = storage_info.get("total_gb", db_device.hdd_capacity_total_gb)
                             db_device.hdd_capacity_free_gb = storage_info.get("free_gb", db_device.hdd_capacity_free_gb)
+                            db_device.storage_media_type = storage_info.get("media_type", db_device.storage_media_type)
 
                         session.add(db_device)
                     session.commit()
         except Exception as e:
             print(f"Error in device monitoring loop: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(60)
 
 
 
@@ -128,23 +145,13 @@ async def lifespan(app: FastAPI):
     # Startup
     monitor_task = None
     try:
-        SQLModel.metadata.create_all(engine)
-        print("Database tables created successfully")
+        from app.db.session import init_db_schema
+        init_db_schema()
+        print("Database schema and migrations initialized successfully")
         # Asegurar existencia del usuario admin por defecto
         from app.models.models import User, UserRole
         from app.core import security
         with Session(engine) as session:
-            try:
-                from sqlalchemy import text
-                session.exec(text("ALTER TABLE camera ADD COLUMN IF NOT EXISTS audio_enabled BOOLEAN DEFAULT FALSE"))
-                session.commit()
-            except Exception:
-                try:
-                    session.rollback()
-                    session.exec(text("ALTER TABLE camera ADD COLUMN audio_enabled BOOLEAN DEFAULT 0"))
-                    session.commit()
-                except Exception:
-                    pass
 
             admin_user = session.exec(select(User).where(User.username == "admin")).first()
             if not admin_user:

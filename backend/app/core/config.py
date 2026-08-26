@@ -27,8 +27,12 @@ def get_default_db_url() -> str:
             os.makedirs(app_data_dir, exist_ok=True)
             db_path = os.path.join(app_data_dir, "sql_app.db")
     else:
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        db_path = os.path.join(base_dir, "sql_app.db")
+        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+        backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        if os.path.exists(os.path.join(root_dir, "sql_app.db")):
+            db_path = os.path.join(root_dir, "sql_app.db")
+        else:
+            db_path = os.path.join(backend_dir, "sql_app.db")
         
     return f"sqlite:///{db_path.replace(os.sep, '/')}"
 

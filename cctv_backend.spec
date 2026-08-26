@@ -40,6 +40,8 @@ hiddenimports = [
     'jose',
     'psycopg2',
     'pymysql',
+    'yaml',
+    'httpx',
 ] + collect_submodules('app')
 
 a = Analysis(

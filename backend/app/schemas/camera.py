@@ -8,5 +8,6 @@ class CameraUpdate(SQLModel):
     is_installed: Optional[bool] = None
     is_recording: Optional[bool] = None
     recording_mode: Optional[str] = None
+    storage_location: Optional[str] = None
     has_video_signal: Optional[bool] = None
     audio_enabled: Optional[bool] = None

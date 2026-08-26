@@ -42,18 +42,13 @@ def main():
     spec_path = os.path.join(PROJECT_DIR, "cctv_backend.spec")
     run_cmd(f'"{py_exe}" -m PyInstaller --noconfirm "{spec_path}"', cwd=PROJECT_DIR)
 
-    log("Step 4: Asegurando binarios externos (go2rtc.exe y go2rtc.yaml)...")
-    go2rtc_src = os.path.join(BACKEND_DIR, "go2rtc.exe")
-    go2rtc_dest = os.path.join(OUTPUT_DIR, "go2rtc.exe")
-    if os.path.exists(go2rtc_src):
-        shutil.copy2(go2rtc_src, go2rtc_dest)
-        print("Copiado go2rtc.exe a la carpeta de distribución.")
-
-    yaml_src = os.path.join(BACKEND_DIR, "go2rtc.yaml")
-    yaml_dest = os.path.join(OUTPUT_DIR, "go2rtc.yaml")
-    if os.path.exists(yaml_src):
-        shutil.copy2(yaml_src, yaml_dest)
-        print("Copiado go2rtc.yaml a la carpeta de distribución.")
+    log("Step 4: Asegurando binarios externos (go2rtc.exe y configuraciones)...")
+    for fname in ["go2rtc.exe", "go2rtc.yaml"]:
+        f_src = os.path.join(BACKEND_DIR, fname)
+        f_dest = os.path.join(OUTPUT_DIR, fname)
+        if os.path.exists(f_src):
+            shutil.copy2(f_src, f_dest)
+            print(f"Copiado {fname} a la carpeta de distribución.")
 
     log("Step 5: Creando Lanzadores en Lote (Iniciar_CCTV.bat y Detener_CCTV.bat)...")
     iniciar_bat = os.path.join(OUTPUT_DIR, "Iniciar_CCTV.bat")
@@ -66,7 +61,7 @@ def main():
         f.write('echo ========================================================\n')
         f.write('taskkill /F /IM cctv_backend.exe /T 2>nul\n')
         f.write('taskkill /F /IM go2rtc.exe /T 2>nul\n')
-        f.write('echo Iniciando servidor backend y streaming...\n')
+        f.write('echo Iniciando servidor backend y streaming WebRTC...\n')
         f.write('start "" "%~dp0cctv_backend.exe"\n')
 
     detener_bat = os.path.join(OUTPUT_DIR, "Detener_CCTV.bat")
@@ -132,16 +127,15 @@ def main():
         f.write('echo    CONFIGURANDO FIREWALL DE WINDOWS (ADMINISTRADOR)\n')
         f.write('echo ========================================================\n')
         f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Web (8500)" dir=in action=allow protocol=TCP localport=8500 profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Stream API (1984)" dir=in action=allow protocol=TCP localport=1984 profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - WebRTC (8555 UDP)" dir=in action=allow protocol=UDP localport=8555 profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - WebRTC (8555 TCP)" dir=in action=allow protocol=TCP localport=8555 profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc WS (1984)" dir=in action=allow protocol=TCP localport=1984 profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc WebRTC (8555)" dir=in action=allow protocol=TCP localport=8555 profile=any\n')
+        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc WebRTC UDP (8555)" dir=in action=allow protocol=UDP localport=8555 profile=any\n')
         f.write('netsh advfirewall firewall add rule name="Sistema CCTV - RTSP Server (8554)" dir=in action=allow protocol=TCP localport=8554 profile=any\n')
         f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc Exe (Inbound)" dir=in action=allow program="%~dp0go2rtc.exe" enable=yes profile=any\n')
         f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc Exe (Outbound)" dir=out action=allow program="%~dp0go2rtc.exe" enable=yes profile=any\n')
         f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Backend Exe (Inbound)" dir=in action=allow program="%~dp0cctv_backend.exe" enable=yes profile=any\n')
         f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Backend Exe (Outbound)" dir=out action=allow program="%~dp0cctv_backend.exe" enable=yes profile=any\n')
         f.write('netsh advfirewall firewall add rule name="Sistema CCTV - RTSP Cameras Outbound (554)" dir=out action=allow protocol=TCP remoteport=554 profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - RTP Inbound (UDP)" dir=in action=allow protocol=UDP localport=10000-65535 profile=any\n')
         f.write('echo.\n')
         f.write('echo [OK] Reglas de Firewall de Windows configuradas exitosamente!\n')
         f.write('pause\n')
