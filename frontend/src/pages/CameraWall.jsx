@@ -26,7 +26,10 @@ import {
   Volume2,
   VolumeX,
   Mic,
-  MicOff
+  MicOff,
+  Copy,
+  ShieldAlert,
+  Info
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
@@ -281,6 +284,100 @@ const CameraWall = () => {
   const [isWebRTCAvailable, setIsWebRTCAvailable] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Referencias y estados para el micrófono e intercomunicador bidireccional
+  const modalIframeRef = useRef(null);
+  const audioMeterRef = useRef(null);
+  const [audioVolume, setAudioVolume] = useState(0);
+  const [micHelpModal, setMicHelpModal] = useState(false);
+  const [micErrorMsg, setMicErrorMsg] = useState('');
+
+  const startAudioMeter = (stream) => {
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      const audioContext = new AudioContextClass();
+      const analyser = audioContext.createAnalyser();
+      const microphone = audioContext.createMediaStreamSource(stream);
+      const javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
+      analyser.smoothingTimeConstant = 0.8;
+      analyser.fftSize = 512;
+      microphone.connect(analyser);
+      analyser.connect(javascriptNode);
+      javascriptNode.connect(audioContext.destination);
+      javascriptNode.onaudioprocess = () => {
+        const array = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(array);
+        let values = 0;
+        for (let i = 0; i < array.length; i++) {
+          values += array[i];
+        }
+        const average = values / array.length;
+        setAudioVolume(Math.min(100, Math.round(average * 3.5)));
+      };
+      audioMeterRef.current = { audioContext, javascriptNode, stream };
+    } catch (e) {
+      console.warn('Audio meter error:', e);
+    }
+  };
+
+  const stopAudioMeter = () => {
+    if (audioMeterRef.current) {
+      try {
+        audioMeterRef.current.javascriptNode?.disconnect();
+        audioMeterRef.current.audioContext?.close();
+        audioMeterRef.current.stream?.getTracks().forEach(t => t.stop());
+      } catch (e) {}
+      audioMeterRef.current = null;
+    }
+    setAudioVolume(0);
+  };
+
+  const handleStartTalk = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      const isHttp = window.location.protocol === 'http:';
+      const isNotLocal = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+      if (isHttp && isNotLocal) {
+        setMicErrorMsg('El navegador restringe el uso del micrófono en conexiones HTTP sobre red local.');
+        setMicHelpModal(true);
+        return;
+      }
+      alert('Tu navegador no admite acceso al micrófono en este contexto.');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      setIsTalking(true);
+      setModalAudioEnabled(true);
+      startAudioMeter(stream);
+      if (modalIframeRef.current && modalIframeRef.current.contentWindow) {
+        modalIframeRef.current.contentWindow.postMessage({ type: 'start_talk' }, '*');
+      }
+    } catch (err) {
+      console.error('Error al solicitar micrófono:', err);
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setMicErrorMsg('Permiso de micrófono denegado por el navegador.');
+        setMicHelpModal(true);
+      } else {
+        alert(`No se pudo activar el micrófono: ${err.message || err.name}`);
+      }
+    }
+  };
+
+  const handleStopTalk = () => {
+    setIsTalking(false);
+    stopAudioMeter();
+    if (modalIframeRef.current && modalIframeRef.current.contentWindow) {
+      modalIframeRef.current.contentWindow.postMessage({ type: 'stop_talk' }, '*');
+    }
+  };
 
   // Intervalos configurables (7, 10, 20, 30, 60, 120s) persistidos en localStorage
   const [autoRefreshSec, setAutoRefreshSec] = useState(() => {
@@ -1343,7 +1440,13 @@ const CameraWall = () => {
                 {/* Botón Audio / Escuchar de la cámara */}
                 <button 
                   type="button"
-                  onClick={() => setModalAudioEnabled(prev => !prev)}
+                  onClick={() => {
+                    const next = !modalAudioEnabled;
+                    setModalAudioEnabled(next);
+                    if (modalIframeRef.current && modalIframeRef.current.contentWindow) {
+                      modalIframeRef.current.contentWindow.postMessage({ type: 'set_muted', muted: !next }, '*');
+                    }
+                  }}
                   className={`p-2 rounded-lg transition-all text-xs font-medium flex items-center gap-1.5 active:scale-95 border cursor-pointer ${
                     modalAudioEnabled || isTalking
                       ? 'bg-amber-500 hover:bg-amber-400 text-black border-amber-400 font-bold shadow-lg shadow-amber-500/20' 
@@ -1359,19 +1462,11 @@ const CameraWall = () => {
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' && (
                   <button 
                     type="button"
-                    onClick={async () => {
+                    onClick={() => {
                       if (!isTalking) {
-                        try {
-                          if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                            await navigator.mediaDevices.getUserMedia({ audio: true });
-                          }
-                          setIsTalking(true);
-                          setModalAudioEnabled(true);
-                        } catch (err) {
-                          alert('No se pudo acceder al micrófono. Por favor asegúrate de permitir el acceso al micrófono en tu navegador.');
-                        }
+                        handleStartTalk();
                       } else {
-                        setIsTalking(false);
+                        handleStopTalk();
                       }
                     }}
                     className={`p-2 rounded-lg transition-all text-xs font-bold flex items-center gap-1.5 active:scale-95 border cursor-pointer ${
@@ -1447,8 +1542,8 @@ const CameraWall = () => {
 
                 <button 
                   onClick={() => {
+                    handleStopTalk();
                     setZoomedCamera(null);
-                    setIsTalking(false);
                     setModalAudioEnabled(false);
                   }}
                   className="bg-zinc-800 hover:bg-red-600 text-zinc-300 hover:text-white px-3.5 py-1.5 rounded-lg font-medium transition-all text-xs active:scale-95 border border-zinc-700/50 cursor-pointer"
@@ -1465,6 +1560,7 @@ const CameraWall = () => {
                 <button
                   type="button"
                   onClick={() => {
+                    handleStopTalk();
                     const currentIdx = activeCameras.findIndex(c => c.id === zoomedCamera.id);
                     const prevIdx = currentIdx > 0 ? currentIdx - 1 : activeCameras.length - 1;
                     const prevCam = activeCameras[prevIdx];
@@ -1472,7 +1568,6 @@ const CameraWall = () => {
                       ...prevCam,
                       url: `${api.defaults.baseURL}/cameras/${prevCam.id}/snapshot?t=${Date.now()}`
                     });
-                    setIsTalking(false);
                     setModalAudioEnabled(false);
                     setModalStreamKey(prev => prev + 1);
                   }}
@@ -1487,8 +1582,9 @@ const CameraWall = () => {
               <div className="w-full h-full max-w-full max-h-full flex items-center justify-center relative bg-black">
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' ? (
                   <iframe 
-                    key={`modal-stream-${zoomedCamera.id}-${modalQuality}-${modalStreamKey}-${modalAudioEnabled || isTalking ? 'audio' : 'mute'}-${isTalking ? 'talk' : 'notalk'}-${videoFit}`}
-                    src={`/player.html?src=${modalQuality === 'hd' ? `camera_${zoomedCamera.id}_hd` : `camera_${zoomedCamera.id}`}&muted=${modalAudioEnabled || isTalking ? '0' : '1'}&talk=${isTalking ? '1' : '0'}&fit=${videoFit}`} 
+                    ref={modalIframeRef}
+                    key={`modal-stream-${zoomedCamera.id}-${modalQuality}-${modalStreamKey}-${videoFit}`}
+                    src={`/player.html?src=${modalQuality === 'hd' ? `camera_${zoomedCamera.id}_hd` : `camera_${zoomedCamera.id}`}&muted=${modalAudioEnabled ? '0' : '1'}&fit=${videoFit}`} 
                     title={zoomedCamera.name}
                     className="w-full h-full max-h-full max-w-full border-0 z-10"
                     scrolling="no"
@@ -1509,40 +1605,41 @@ const CameraWall = () => {
                       <div className="bg-red-950/95 border-2 border-red-500/80 backdrop-blur-md rounded-2xl px-6 py-3 shadow-2xl flex items-center gap-4 animate-in slide-in-from-bottom-3 duration-300">
                         <div className="flex items-center gap-2">
                           <span className="w-3.5 h-3.5 rounded-full bg-red-500 animate-ping" />
-                          <Mic size={20} className="text-red-400 animate-bounce" />
+                          <Mic size={22} className="text-red-400 animate-bounce" />
                         </div>
                         <div className="flex flex-col">
-                          <span className="text-xs font-black text-white tracking-wide uppercase flex items-center gap-2">
-                            TRANSMITIENDO VOZ A LA CÁMARA
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-black text-white tracking-wide uppercase">
+                              MICRÓFONO ABIERTO — HABLA AHORA
+                            </span>
                             <span className="bg-red-600 text-[10px] px-1.5 py-0.5 rounded font-mono font-bold">EN VIVO</span>
-                          </span>
-                          <span className="text-[11px] text-red-200">
-                            Tu voz se reproduce en el altavoz de la cámara ({zoomedCamera.name})
-                          </span>
+                          </div>
+                          {/* Medidor de Nivel de Voz VU Meter */}
+                          <div className="flex items-center gap-2 mt-1">
+                            <div className="w-32 h-2.5 bg-black/60 rounded-full overflow-hidden border border-red-500/30 p-0.5 flex items-center">
+                              <div 
+                                className="h-full rounded-full transition-all duration-75 bg-gradient-to-r from-emerald-500 via-yellow-400 to-red-500" 
+                                style={{ width: `${Math.max(4, audioVolume)}%` }} 
+                              />
+                            </div>
+                            <span className="text-[10px] font-mono text-zinc-300 font-bold">
+                              {audioVolume > 10 ? '🎙️ Voz Detectada' : '👂 Escuchando tu voz...'}
+                            </span>
+                          </div>
                         </div>
                         <button
                           type="button"
-                          onClick={() => setIsTalking(false)}
+                          onClick={handleStopTalk}
                           className="bg-red-600 hover:bg-red-500 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-lg transition-all active:scale-95 border border-red-300 cursor-pointer flex items-center gap-1.5"
                         >
                           <MicOff size={14} />
-                          <span>Silenciar Micrófono</span>
+                          <span>Silenciar</span>
                         </button>
                       </div>
                     ) : (
                       <button
                         type="button"
-                        onClick={async () => {
-                          try {
-                            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                              await navigator.mediaDevices.getUserMedia({ audio: true });
-                            }
-                            setIsTalking(true);
-                            setModalAudioEnabled(true);
-                          } catch (err) {
-                            alert('No se pudo acceder al micrófono. Por favor permite el acceso al micrófono en el navegador para hablar por la cámara.');
-                          }
-                        }}
+                        onClick={handleStartTalk}
                         className="bg-zinc-900/90 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-zinc-700/80 hover:border-red-500/60 backdrop-blur-md rounded-full px-5 py-2.5 shadow-2xl flex items-center gap-3 transition-all hover:scale-105 active:scale-95 cursor-pointer group"
                         title="Presiona para hablar por el altavoz de esta cámara"
                       >
@@ -1564,6 +1661,7 @@ const CameraWall = () => {
                 <button
                   type="button"
                   onClick={() => {
+                    handleStopTalk();
                     const currentIdx = activeCameras.findIndex(c => c.id === zoomedCamera.id);
                     const nextIdx = currentIdx < activeCameras.length - 1 ? currentIdx + 1 : 0;
                     const nextCam = activeCameras[nextIdx];
@@ -1571,7 +1669,6 @@ const CameraWall = () => {
                       ...nextCam,
                       url: `${api.defaults.baseURL}/cameras/${nextCam.id}/snapshot?t=${Date.now()}`
                     });
-                    setIsTalking(false);
                     setModalAudioEnabled(false);
                     setModalStreamKey(prev => prev + 1);
                   }}
@@ -1581,6 +1678,77 @@ const CameraWall = () => {
                   <ChevronRight size={24} />
                 </button>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Modal de Ayuda y Diagnóstico de Permisos de Micrófono */}
+        {micHelpModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+            <div className="bg-zinc-900 border border-zinc-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col gap-4">
+              <div className="flex items-center gap-3 text-amber-400">
+                <ShieldAlert size={28} className="shrink-0" />
+                <h3 className="text-lg font-bold text-white">Configuración de Micrófono en el Navegador</h3>
+              </div>
+              
+              <p className="text-sm text-zinc-300">
+                {micErrorMsg || 'El navegador no permitió acceder al micrófono de tu dispositivo.'}
+              </p>
+
+              <div className="bg-zinc-950 p-3.5 rounded-xl border border-zinc-800 text-xs flex flex-col gap-2">
+                <span className="font-bold text-zinc-200 flex items-center gap-1.5">
+                  <Info size={14} className="text-blue-400" />
+                  ¿Cómo habilitar el micrófono en la red local (HTTP)?
+                </span>
+                <p className="text-zinc-400 leading-relaxed">
+                  Por seguridad, Chrome y Edge bloquean el micrófono en direcciones IP (HTTP). Para habilitarlo en 1 minuto:
+                </p>
+                <ol className="list-decimal list-inside text-zinc-300 space-y-1.5 pl-1">
+                  <li>
+                    Abre una pestaña en tu navegador y ve a:
+                    <div className="mt-1 flex items-center gap-2">
+                      <code className="bg-zinc-900 px-2 py-1 rounded text-amber-300 font-mono text-[11px] select-all">
+                        chrome://flags/#unsafely-treat-insecure-origin-as-secure
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText('chrome://flags/#unsafely-treat-insecure-origin-as-secure')}
+                        className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-200 text-[10px] flex items-center gap-1 cursor-pointer"
+                      >
+                        <Copy size={12} /> Copiar
+                      </button>
+                    </div>
+                  </li>
+                  <li>
+                    Pega la dirección de este servidor en el campo de texto:
+                    <div className="mt-1 flex items-center gap-2">
+                      <code className="bg-zinc-900 px-2 py-1 rounded text-emerald-400 font-mono text-[11px] select-all">
+                        {`http://${window.location.host}`}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(`http://${window.location.host}`)}
+                        className="px-2 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-200 text-[10px] flex items-center gap-1 cursor-pointer"
+                      >
+                        <Copy size={12} /> Copiar
+                      </button>
+                    </div>
+                  </li>
+                  <li>
+                    Cambia la opción a <strong className="text-white font-semibold">"Enabled"</strong> y reinicia el navegador.
+                  </li>
+                </ol>
+              </div>
+
+              <div className="flex justify-end gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => setMicHelpModal(false)}
+                  className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-5 py-2.5 rounded-xl shadow-lg transition-all cursor-pointer"
+                >
+                  Entendido
+                </button>
+              </div>
             </div>
           </div>
         )}

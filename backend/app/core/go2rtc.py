@@ -97,6 +97,8 @@ def sync_go2rtc_config():
                         streams[f"camera_{camera.id}_hd"] = main_url
         
         candidates = get_local_ip_candidates()
+        import shutil
+        ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
 
         config = {
             "api": {
@@ -109,6 +111,9 @@ def sync_go2rtc_config():
             "webrtc": {
                 "listen": ":8555",
                 "candidates": candidates
+            },
+            "ffmpeg": {
+                "bin": ffmpeg_bin
             },
             "streams": streams
         }

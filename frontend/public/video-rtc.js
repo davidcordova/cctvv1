@@ -589,6 +589,71 @@ export class VideoRTC extends HTMLElement {
     }
 
     /**
+     * Activa el micrófono dinámicamente sobre la conexión WebRTC existente sin recargar el video
+     * @param {MediaStream|null} customStream
+     * @returns {Promise<boolean>}
+     */
+    async startMicrophone(customStream = null) {
+        this.media = 'video,audio,microphone';
+        if (!this.pc) return false;
+        try {
+            let stream = customStream || this.micStream;
+            if (!stream && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+            }
+            if (stream) {
+                this.micStream = stream;
+                const micTrack = stream.getAudioTracks()[0];
+                if (micTrack) {
+                    const transceivers = this.pc.getTransceivers();
+                    const audioTr = transceivers.find(t => t.receiver?.track?.kind === 'audio' || t.sender?.track?.kind === 'audio');
+                    if (audioTr) {
+                        await audioTr.sender.replaceTrack(micTrack);
+                        audioTr.direction = 'sendrecv';
+                    } else {
+                        this.pc.addTransceiver(micTrack, { direction: 'sendrecv' });
+                    }
+                    const offer = await this.pc.createOffer();
+                    await this.pc.setLocalDescription(offer);
+                    this.send({ type: 'webrtc/offer', value: offer.sdp });
+                    return true;
+                }
+            }
+        } catch (e) {
+            console.warn('startMicrophone error:', e);
+        }
+        return false;
+    }
+
+    /**
+     * Silencia y detiene el micrófono de inmediato, restaurando la recepción de audio
+     */
+    stopMicrophone() {
+        this.media = 'video,audio';
+        if (this.micStream) {
+            try {
+                this.micStream.getTracks().forEach(t => t.stop());
+            } catch (e) {}
+            this.micStream = null;
+        }
+        if (this.pc) {
+            try {
+                const audioTr = this.pc.getTransceivers().find(t => t.sender?.track?.kind === 'audio');
+                if (audioTr) {
+                    audioTr.sender.replaceTrack(null).catch(() => {});
+                    audioTr.direction = 'recvonly';
+                }
+            } catch (e) {}
+        }
+    }
+
+    /**
      * @param video2 {HTMLVideoElement}
      */
     onpcvideo(video2) {

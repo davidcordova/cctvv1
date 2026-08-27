@@ -211,7 +211,7 @@
     }
 
     // Receptor de mensajes desde el contenedor padre (React)
-    window.addEventListener('message', (event) => {
+    window.addEventListener('message', async (event) => {
       const data = event.data;
       if (!data || typeof data !== 'object') return;
 
@@ -220,6 +220,20 @@
         if (v) {
           v.muted = Boolean(data.muted);
           v.volume = data.muted ? 0 : 1;
+        }
+      }
+
+      if (data.type === 'start_talk' && currentPlayer) {
+        if (talkHudEl) talkHudEl.classList.remove('hidden');
+        if (typeof currentPlayer.startMicrophone === 'function') {
+          await currentPlayer.startMicrophone();
+        }
+      }
+
+      if (data.type === 'stop_talk' && currentPlayer) {
+        if (talkHudEl) talkHudEl.classList.add('hidden');
+        if (typeof currentPlayer.stopMicrophone === 'function') {
+          currentPlayer.stopMicrophone();
         }
       }
     });
