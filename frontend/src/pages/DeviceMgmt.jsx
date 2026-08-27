@@ -253,15 +253,16 @@ const DeviceMgmt = () => {
 
   const adoptDevice = (dev) => {
     setTestStatus(null);
+    const isIpc = (dev.type || '').toUpperCase() === 'IPC';
     setFormData({
-      name: dev.model || (dev.brand ? `Grabador ${dev.brand}` : 'Grabador CCTV'),
+      name: dev.model || (isIpc ? (dev.brand ? `Cámara IP ${dev.brand}` : 'Cámara IP') : (dev.brand ? `Grabador ${dev.brand}` : 'Grabador CCTV')),
       host: dev.host,
       port: parseInt(dev.port) || 80,
       username: 'admin',
       password: '',
       device_type: dev.type || 'DVR',
       brand: dev.brand || 'Hikvision',
-      channel_count: dev.channel_count || 8
+      channel_count: dev.channel_count !== undefined ? dev.channel_count : (isIpc ? 1 : 8)
     });
     setIsModalOpen(true);
   };

@@ -263,14 +263,15 @@ def scan_network(timeout=3.0) -> List[Dict]:
                     port = _extract_xml(raw, "HttpPort") or "80"
                     brand = "Ezviz" if "<EZVIZCode>" in raw else "Hikvision"
 
+                    is_dvr = any(k in model.lower() for k in ["ds-7", "ds-8", "dvr", "nvr", "x5s", "x5c"])
                     devices_by_ip[host] = {
                         "host": host,
                         "model": model,
                         "serial": serial,
                         "port": port,
                         "brand": brand,
-                        "type": "DVR" if "ds-7" in model.lower() or "dvr" in model.lower() or "nvr" in model.lower() else "IPC",
-                        "channel_count": 8
+                        "type": "DVR" if is_dvr else "IPC",
+                        "channel_count": 8 if is_dvr else 1
                     }
                 elif "onvif" in raw.lower() or "ProbeMatches" in raw:
                     if host not in devices_by_ip:

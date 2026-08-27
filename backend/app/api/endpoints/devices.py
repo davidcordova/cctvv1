@@ -87,7 +87,9 @@ async def create_device(
     session.commit()
     session.refresh(device)
 
-    count_to_create = device.channel_count if device.channel_count and device.channel_count > 0 else 8
+    is_ipc = str(device.device_type).upper() == "IPC"
+    default_count = 1 if is_ipc else 8
+    count_to_create = device.channel_count if device.channel_count and device.channel_count > 0 else default_count
     channels_found = []
 
     # Intentar autodescubrimiento ISAPI
@@ -103,8 +105,9 @@ async def create_device(
     if channels_found:
         for chan in channels_found:
             rtsp = generate_rtsp_url(device.host, device.username, device.password, chan['id'], device.brand)
+            cam_name = f"{chan['name']} - {device.name}" if not is_ipc else device.name
             camera = Camera(
-                name=f"{chan['name']} - {device.name}",
+                name=cam_name,
                 channel=chan['id'],
                 device_id=device.id,
                 rtsp_url=rtsp
@@ -114,8 +117,9 @@ async def create_device(
         # Fallback usando el número de canales indicado por el usuario
         for i in range(1, count_to_create + 1):
             rtsp = generate_rtsp_url(device.host, device.username, device.password, i, device.brand)
+            cam_name = device.name if count_to_create == 1 else f"Cámara {i} - {device.name}"
             camera = Camera(
-                name=f"Cámara {i} - {device.name}",
+                name=cam_name,
                 channel=i,
                 device_id=device.id,
                 rtsp_url=rtsp
