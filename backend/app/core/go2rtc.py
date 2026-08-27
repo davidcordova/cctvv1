@@ -76,23 +76,23 @@ def sync_go2rtc_config():
                             camera.channel,
                             device.brand
                         ).split("#")[0]
-                        streams[f"camera_{camera.id}"] = f"{sub_url}#backchannel=0"
-                        streams[f"camera_{camera.id}_hd"] = f"{main_url}#backchannel=0"
+                        streams[f"camera_{camera.id}"] = sub_url
+                        streams[f"camera_{camera.id}_hd"] = f"{main_url}#backchannel=1"
                     elif device and "ezviz" in str(device.brand).lower():
-                        # Cámaras Ezviz: probar URL principal y variantes estándar de Ezviz (RTSP e ISAPI)
+                        # Cámaras Ezviz (ej. H6c, C6N): habilitar backchannel y probar URL principal y variantes estándar
                         user_enc = urllib.parse.quote(device.username or "admin", safe="")
                         pass_enc = urllib.parse.quote(device.password or "", safe="")
                         ezviz_sources = [
-                            f"{main_url}#backchannel=0",
-                            f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/Streaming/Channels/101#backchannel=0",
-                            f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/h264/ch1/main/av_stream#backchannel=0",
-                            f"isapi://{user_enc}:{pass_enc}@{device.host}:{device.port or 80}/#backchannel=0"
+                            f"{main_url}#backchannel=1",
+                            f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/Streaming/Channels/101#backchannel=1",
+                            f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/h264/ch1/main/av_stream#backchannel=1",
+                            f"isapi://{user_enc}:{pass_enc}@{device.host}:{device.port or 80}/#backchannel=1"
                         ]
                         streams[f"camera_{camera.id}"] = ezviz_sources
                         streams[f"camera_{camera.id}_hd"] = ezviz_sources
                     else:
-                        streams[f"camera_{camera.id}"] = f"{main_url}#backchannel=0"
-                        streams[f"camera_{camera.id}_hd"] = f"{main_url}#backchannel=0"
+                        streams[f"camera_{camera.id}"] = f"{main_url}#backchannel=1"
+                        streams[f"camera_{camera.id}_hd"] = f"{main_url}#backchannel=1"
         
         candidates = get_local_ip_candidates()
 

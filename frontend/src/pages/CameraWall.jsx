@@ -1492,7 +1492,7 @@ const CameraWall = () => {
                     title={zoomedCamera.name}
                     className="w-full h-full max-h-full max-w-full border-0 z-10"
                     scrolling="no"
-                    allow="autoplay; fullscreen; microphone *"
+                    allow="autoplay; fullscreen; microphone; camera; display-capture"
                   />
                 ) : (
                   <img 
