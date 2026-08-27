@@ -117,6 +117,34 @@ const DeviceMgmt = () => {
     }
   };
 
+  // Sincronizar hora de todos los grabadores en lote
+  const handleSyncAllTime = async () => {
+    const onlineDevices = devices.filter(d => d.is_online);
+    if (onlineDevices.length === 0) {
+      alert('No hay grabadores en línea disponibles para sincronizar hora.');
+      return;
+    }
+    setIsSyncingAll(true);
+    try {
+      let syncedCount = 0;
+      for (const dev of onlineDevices) {
+        try {
+          await api.post(`/devices/${dev.id}/sync-time`);
+          syncedCount++;
+        } catch (e) {
+          console.error(`Error sincronizando hora en ${dev.name}:`, e);
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: ['devices'] });
+      queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
+      alert(`✓ Sincronización horaria completada en ${syncedCount} de ${onlineDevices.length} grabadores.`);
+    } catch (err) {
+      alert('Error en la sincronización horaria masiva: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setIsSyncingAll(false);
+    }
+  };
+
   // Sincronizar almacenamiento de un equipo
   const handleSyncStorage = async (device) => {
     if (!device.is_online) {
