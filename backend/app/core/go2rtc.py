@@ -64,7 +64,6 @@ def sync_go2rtc_config():
                         device 
                         and str(device.device_type).upper() in ("DVR", "NVR") 
                         and (device.channel_count or 1) > 1 
-                        and device.host != "192.168.2.36"
                         and "ezviz" not in str(device.brand).lower()
                     )
 
@@ -76,7 +75,11 @@ def sync_go2rtc_config():
                             camera.channel,
                             device.brand
                         ).split("#")[0]
-                        streams[f"camera_{camera.id}"] = sub_url
+                        # Substream con fallback automático al stream principal si el DVR no tiene subcanal habilitado
+                        if sub_url != main_url:
+                            streams[f"camera_{camera.id}"] = [sub_url, main_url]
+                        else:
+                            streams[f"camera_{camera.id}"] = main_url
                         streams[f"camera_{camera.id}_hd"] = main_url
                     elif device and "ezviz" in str(device.brand).lower():
                         # Cámaras Ezviz (ej. H6c, C6N, H8c, H3c): Probar URL directa y variantes de streaming estándar
@@ -123,7 +126,7 @@ def sync_go2rtc_config():
 
         # Notificar y registrar streams dinámicamente en go2rtc si ya se encuentra en ejecución
         try:
-            with httpx.Client(timeout=3.0) as client:
+            with httpx.Client(timeout=2.0) as client:
                 res = client.get("http://localhost:1984/api/streams")
                 if res.status_code == 200:
                     for src_name, rtsp_entry in streams.items():
@@ -132,6 +135,9 @@ def sync_go2rtc_config():
                                 client.put("http://localhost:1984/api/streams", params={"src": s, "name": src_name})
                         else:
                             client.put("http://localhost:1984/api/streams", params={"src": rtsp_entry, "name": src_name})
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # Normal durante el arranque inicial antes de que el proceso go2rtc.exe inicie
+            pass
         except Exception as e:
             print(f"Notice: could not dynamically update go2rtc via API: {e}")
 
