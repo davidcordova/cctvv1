@@ -92,13 +92,25 @@ async def create_device(
     count_to_create = device.channel_count if device.channel_count and device.channel_count > 0 else default_count
     channels_found = []
 
-    # Intentar autodescubrimiento ISAPI
+    # Intentar autodescubrimiento de hardware y canales
     try:
         driver = HikvisionDriver(device)
+        hw = await driver.get_hardware_details()
+        if hw.get("model"):
+            device.model = hw["model"]
+        if hw.get("serial_number"):
+            device.serial_number = hw["serial_number"]
+        if hw.get("firmware_version"):
+            device.firmware_version = hw["firmware_version"]
+        if hw.get("mac_address"):
+            device.mac_address = hw["mac_address"]
+        if hw.get("brand") and (device.brand == Brand.GENERIC or str(device.brand) == "Brand.GENERIC"):
+            device.brand = hw["brand"]
+
         channels_found = await driver.get_channels()
         if channels_found and device.brand == Brand.GENERIC:
             device.brand = Brand.HIKVISION
-            session.add(device)
+        session.add(device)
     except Exception as e:
         print(f"Discovery error: {e}")
 
@@ -511,5 +523,195 @@ async def sync_device_storage(
         raise HTTPException(status_code=500, detail=f"Error al verificar almacenamiento: {str(e)}")
 
 
+@router.post("/{device_id}/toggle-onvif")
+async def toggle_device_onvif(
+    *,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_operator_or_admin),
+    device_id: int,
+    payload: dict = None
+) -> Any:
+    device = session.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Dispositivo no encontrado")
+
+    new_state = payload.get("enabled") if payload and "enabled" in payload else not getattr(device, "onvif_enabled", False)
+    
+    try:
+        driver = HikvisionDriver(device)
+        success, message = await driver.set_onvif_status(new_state)
+        
+        device.onvif_enabled = new_state
+        session.add(device)
+
+        # Actualizar también las cámaras asociadas al dispositivo
+        cameras = session.exec(select(Camera).where(Camera.device_id == device_id)).all()
+        for cam in cameras:
+            cam.onvif_enabled = new_state
+            session.add(cam)
+
+        state_text = "Habilitado" if new_state else "Deshabilitado"
+        report = Report(
+            device_id=device.id,
+            event_type="Configuración ONVIF",
+            description=f"Protocolo ONVIF {state_text} para el dispositivo {device.name} por {current_user.full_name or current_user.username}.",
+            severity="info"
+        )
+        session.add(report)
+        session.commit()
+        session.refresh(device)
+
+        # Refrescar configuración de streaming go2rtc
+        from app.core.go2rtc import sync_go2rtc_config
+        sync_go2rtc_config()
+
+        return {
+            "ok": True,
+            "onvif_enabled": new_state,
+            "message": message,
+            "device": device
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al cambiar estado ONVIF: {str(e)}")
 
 
+@router.post("/{device_id}/sync-info")
+async def sync_device_hardware_info(
+    *,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_operator_or_admin),
+    device_id: int
+) -> Any:
+    """Consulta al hardware (ISAPI/CGI/SADP/ONVIF) y actualiza Marca, Modelo, Número de Serie, MAC y Firmware."""
+    device = session.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Dispositivo no encontrado")
+
+    try:
+        driver = HikvisionDriver(device)
+        hw = await driver.get_hardware_details()
+
+        if hw.get("model"):
+            device.model = hw["model"]
+        if hw.get("serial_number"):
+            device.serial_number = hw["serial_number"]
+        if hw.get("firmware_version"):
+            device.firmware_version = hw["firmware_version"]
+        if hw.get("mac_address"):
+            device.mac_address = hw["mac_address"]
+        if hw.get("brand") and (device.brand == Brand.GENERIC or str(device.brand) == "Brand.GENERIC"):
+            device.brand = hw["brand"]
+
+        device.is_online = True
+        session.add(device)
+        session.commit()
+        session.refresh(device)
+
+        msg_parts = []
+        if device.model:
+            msg_parts.append(f"Modelo: {device.model}")
+        if device.serial_number:
+            msg_parts.append(f"S/N: {device.serial_number}")
+        if device.firmware_version:
+            msg_parts.append(f"FW: {device.firmware_version}")
+        if device.mac_address:
+            msg_parts.append(f"MAC: {device.mac_address}")
+
+        summary = " | ".join(msg_parts) if msg_parts else "Identificación obtenida"
+
+        return {
+            "ok": True,
+            "message": f"Datos de '{device.name}' actualizados: {summary}",
+            "hardware": hw,
+            "device": device
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al obtener datos del dispositivo: {str(e)}")
+
+
+@router.post("/sync-all-info")
+async def sync_all_devices_hardware_info(
+    *,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(require_operator_or_admin)
+) -> Any:
+    """Ejecuta un escaneo y sincronización masiva de datos (Marca, Modelo, Serie, MAC, Firmware) para todos los dispositivos."""
+    devices = session.exec(select(Device)).all()
+    if not devices:
+        return {"ok": True, "message": "No hay dispositivos registrados", "updated_count": 0, "results": []}
+
+    # Escaneo de red para acelerar la detección de todos los dispositivos en paralelo
+    network_map = {}
+    try:
+        scanned = scanner.scan_network(timeout=1.5)
+        for s in scanned:
+            network_map[s["host"]] = s
+    except Exception as e:
+        print(f"Error in scan_network batch: {e}")
+
+    results = []
+    updated_count = 0
+
+    for dev in devices:
+        try:
+            driver = HikvisionDriver(dev)
+            hw = await driver.get_hardware_details()
+            
+            # Enriquecer con mapa de red si faltaba algo
+            if dev.host in network_map:
+                net_info = network_map[dev.host]
+                if not hw.get("model") and net_info.get("model"):
+                    hw["model"] = net_info["model"]
+                if not hw.get("serial_number") and net_info.get("serial"):
+                    hw["serial_number"] = net_info["serial"]
+                if (not hw.get("brand") or hw.get("brand") == Brand.GENERIC) and net_info.get("brand"):
+                    hw["brand"] = net_info["brand"]
+
+            changed = False
+            if hw.get("model") and dev.model != hw["model"]:
+                dev.model = hw["model"]
+                changed = True
+            if hw.get("serial_number") and dev.serial_number != hw["serial_number"]:
+                dev.serial_number = hw["serial_number"]
+                changed = True
+            if hw.get("firmware_version") and dev.firmware_version != hw["firmware_version"]:
+                dev.firmware_version = hw["firmware_version"]
+                changed = True
+            if hw.get("mac_address") and dev.mac_address != hw["mac_address"]:
+                dev.mac_address = hw["mac_address"]
+                changed = True
+            if hw.get("brand") and dev.brand == Brand.GENERIC and hw["brand"] != Brand.GENERIC:
+                dev.brand = hw["brand"]
+                changed = True
+
+            session.add(dev)
+            if changed:
+                updated_count += 1
+
+            results.append({
+                "id": dev.id,
+                "name": dev.name,
+                "host": dev.host,
+                "brand": dev.brand,
+                "model": dev.model,
+                "serial_number": dev.serial_number,
+                "firmware_version": dev.firmware_version,
+                "mac_address": dev.mac_address,
+                "status": "success"
+            })
+        except Exception as ex:
+            results.append({
+                "id": dev.id,
+                "name": dev.name,
+                "host": dev.host,
+                "status": "error",
+                "error": str(ex)
+            })
+
+    session.commit()
+    return {
+        "ok": True,
+        "message": f"Sincronización de hardware completada: {updated_count} dispositivos actualizados.",
+        "updated_count": updated_count,
+        "results": results
+    }

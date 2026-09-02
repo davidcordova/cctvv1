@@ -577,8 +577,10 @@ export class VideoRTC extends HTMLElement {
         }
 
         if (micTrack) {
-            // Un solo transceptor de audio bidireccional sendrecv para hablar y escuchar simultáneamente
-            pc.addTransceiver(micTrack, { direction: hasAudio ? 'sendrecv' : 'sendonly' });
+            try {
+                pc.addTrack(micTrack, this.micStream);
+            } catch (e) {}
+            pc.addTransceiver(micTrack, { direction: hasAudio ? 'sendrecv' : 'sendonly', streams: [this.micStream] });
         } else if (hasAudio) {
             pc.addTransceiver('audio', { direction: 'recvonly' });
         }

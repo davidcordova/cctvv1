@@ -11,7 +11,10 @@ class DeviceBase(SQLModel):
     device_type: DeviceType
     brand: Brand
     channel_count: Optional[int] = 8
+    model: Optional[str] = None
     serial_number: Optional[str] = None
+    firmware_version: Optional[str] = None
+    mac_address: Optional[str] = None
     storage_media_type: Optional[str] = "HDD SATA"
     hdd_status: Optional[str] = "Normal (Formato OK)"
     hdd_capacity_total_gb: Optional[float] = None
@@ -19,6 +22,8 @@ class DeviceBase(SQLModel):
     device_time: Optional[datetime] = None
     time_offset_seconds: Optional[int] = 0
     time_synced_at: Optional[datetime] = None
+    onvif_enabled: Optional[bool] = False
+    verification_code: Optional[str] = None
 
 class DeviceCreate(DeviceBase):
     password: str
@@ -32,7 +37,10 @@ class DeviceUpdate(SQLModel):
     device_type: Optional[DeviceType] = None
     brand: Optional[Brand] = None
     channel_count: Optional[int] = None
+    model: Optional[str] = None
     serial_number: Optional[str] = None
+    firmware_version: Optional[str] = None
+    mac_address: Optional[str] = None
     storage_media_type: Optional[str] = None
     hdd_status: Optional[str] = None
     hdd_capacity_total_gb: Optional[float] = None
@@ -40,7 +48,10 @@ class DeviceUpdate(SQLModel):
     device_time: Optional[datetime] = None
     time_offset_seconds: Optional[int] = None
     time_synced_at: Optional[datetime] = None
+    onvif_enabled: Optional[bool] = None
+    verification_code: Optional[str] = None
 
 class DeviceRead(DeviceBase):
     id: int
     is_online: bool = False
+    onvif_enabled: bool = False

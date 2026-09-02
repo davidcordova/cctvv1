@@ -11,3 +11,4 @@ class CameraUpdate(SQLModel):
     storage_location: Optional[str] = None
     has_video_signal: Optional[bool] = None
     audio_enabled: Optional[bool] = None
+    onvif_enabled: Optional[bool] = None

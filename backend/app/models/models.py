@@ -44,7 +44,10 @@ class Device(SQLModel, table=True):
     device_type: DeviceType
     brand: Brand
     channel_count: Optional[int] = Field(default=8)
+    model: Optional[str] = None
     serial_number: Optional[str] = None
+    firmware_version: Optional[str] = None
+    mac_address: Optional[str] = None
     is_online: bool = Field(default=False)
     
     # HDD & Almacenamiento Real y Telemetría
@@ -57,6 +60,10 @@ class Device(SQLModel, table=True):
     device_time: Optional[datetime] = None
     time_offset_seconds: Optional[int] = Field(default=0)
     time_synced_at: Optional[datetime] = None
+    onvif_enabled: bool = Field(default=False)
+    
+    # Código de Verificación de Seguridad / Intercomunicador (ej. Ezviz de 6 letras)
+    verification_code: Optional[str] = Field(default=None)
     
     cameras: List["Camera"] = Relationship(back_populates="device")
 
@@ -72,12 +79,13 @@ class Camera(SQLModel, table=True):
     # Asignación de Puerto / Inventario Físico
     is_installed: bool = Field(default=True) # True: Cámara conectada / False: Puerto libre o en reserva
     
-    # Modalidad de Grabación, Almacenamiento y Señal
+    # Modalidad de Grabación, Almacenamiento, Señal y Protocolos
     is_recording: bool = Field(default=True)
     recording_mode: Optional[str] = Field(default="Continuo (24/7)")
     storage_location: Optional[str] = Field(default=None) # ej. "NVR Centralizado (192.168.3.82)", "MicroSD Local", "DVR Local"
     has_video_signal: bool = Field(default=True)
     audio_enabled: bool = Field(default=False) # True: Audio activado / False: Silenciado (Por defecto)
+    onvif_enabled: bool = Field(default=False) # True: Protocolo ONVIF Habilitado / False: Deshabilitado
 
 class ViewGroup(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)

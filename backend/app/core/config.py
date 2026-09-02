@@ -26,6 +26,22 @@ def get_default_db_url() -> str:
             app_data_dir = os.path.join(base_dir, "Sistema_CCTV")
             os.makedirs(app_data_dir, exist_ok=True)
             db_path = os.path.join(app_data_dir, "sql_app.db")
+
+        # Si la base de datos destino es nueva o vacía, buscar y migrar copia existente si existe
+        if not os.path.exists(db_path) or os.path.getsize(db_path) == 0:
+            import shutil
+            candidate_sources = [
+                os.path.abspath(os.path.join(exe_dir, "..", "..", "sql_app.db")),
+                os.path.abspath(os.path.join(exe_dir, "..", "sql_app.db")),
+                os.path.join(os.getcwd(), "sql_app.db")
+            ]
+            for src in candidate_sources:
+                if os.path.exists(src) and os.path.getsize(src) > 1000:
+                    try:
+                        shutil.copy2(src, db_path)
+                        break
+                    except Exception:
+                        pass
     else:
         root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
         backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))

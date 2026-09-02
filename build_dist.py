@@ -29,6 +29,10 @@ def get_python_exe():
     return sys.executable
 
 def main():
+    # Asegurar que procesos previos estén cerrados para evitar bloqueos de archivo
+    subprocess.run("taskkill /F /IM cctv_backend.exe 2>nul", shell=True)
+    subprocess.run("taskkill /F /IM go2rtc.exe 2>nul", shell=True)
+    
     py_exe = get_python_exe()
     print(f"Utilizando interprete Python: {py_exe}")
 
@@ -59,6 +63,8 @@ def main():
         f.write('echo ========================================================\n')
         f.write('echo         SISTEMA DE GESTION CCTV - INICIANDO\n')
         f.write('echo ========================================================\n')
+        f.write('for /f "tokens=5" %%a in (\'netstat -aon ^| findstr ":8500" ^| findstr "LISTENING"\') do taskkill /f /pid %%a 2>nul\n')
+        f.write('for /f "tokens=5" %%a in (\'netstat -aon ^| findstr ":1984" ^| findstr "LISTENING"\') do taskkill /f /pid %%a 2>nul\n')
         f.write('taskkill /F /IM cctv_backend.exe /T 2>nul\n')
         f.write('taskkill /F /IM go2rtc.exe /T 2>nul\n')
         f.write('echo Iniciando servidor backend y streaming WebRTC...\n')
@@ -73,6 +79,8 @@ def main():
         f.write('echo         SISTEMA DE GESTION CCTV - DETENIENDO\n')
         f.write('echo ========================================================\n')
         f.write('echo Deteniendo procesos del Sistema CCTV...\n')
+        f.write('for /f "tokens=5" %%a in (\'netstat -aon ^| findstr ":8500" ^| findstr "LISTENING"\') do taskkill /f /pid %%a 2>nul\n')
+        f.write('for /f "tokens=5" %%a in (\'netstat -aon ^| findstr ":1984" ^| findstr "LISTENING"\') do taskkill /f /pid %%a 2>nul\n')
         f.write('taskkill /F /IM cctv_backend.exe /T 2>nul\n')
         f.write('taskkill /F /IM go2rtc.exe /T 2>nul\n')
         f.write('echo Procesos finalizados con exito.\n')

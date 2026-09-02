@@ -192,7 +192,12 @@ def _probe_cctv_ip(ip: str, arp_map: Dict[str, str]) -> Dict:
                         s.sendall(b"GET / HTTP/1.1\r\nHost: " + ip.encode() + b"\r\n\r\n")
                         banner = s.recv(1024).decode(errors="ignore")
                         s.close()
-                        if "dahua" in banner.lower() or "login to" in banner.lower() or "dh-xvr" in banner.lower():
+                        if "ezviz" in banner.lower():
+                            brand = "Ezviz"
+                            model = f"Cámara IP Ezviz ({ip})"
+                            dev_type = "IPC"
+                            break
+                        elif "dahua" in banner.lower() or "login to" in banner.lower() or "dh-xvr" in banner.lower():
                             brand = "Dahua"
                             model = f"Grabador DVR Dahua ({ip})"
                             dev_type = "DVR"
@@ -204,6 +209,15 @@ def _probe_cctv_ip(ip: str, arp_map: Dict[str, str]) -> Dict:
                             break
                     except Exception:
                         pass
+
+            # Detect Ezviz / Hikvision IPC if port 8000 is not present or if webserver signature
+            if brand == "Generico" and (80 in open_ports or 443 in open_ports):
+                # Check for Ezviz / Hikvision MAC OUI prefix
+                mac_prefix = mac.lower()[:8]
+                if mac_prefix in ["bc:54:51", "c8:02:8f", "ac:14:b0", "d4:61:9d", "44:19:b6", "ec:71:db"]:
+                    brand = "Ezviz"
+                    model = f"Cámara IP Ezviz ({ip})"
+                    dev_type = "IPC"
 
             return {
                 "host": ip,
@@ -218,23 +232,12 @@ def _probe_cctv_ip(ip: str, arp_map: Dict[str, str]) -> Dict:
         return None
     except Exception:
         return None
-
-
-def scan_network(timeout=3.0) -> List[Dict]:
-    """
-    Escanea la red local exhaustivamente para descubrir dispositivos CCTV (Dahua, Hikvision, Ezviz, ONVIF, etc.).
-    Combina:
-    1. Descubrimiento Multicast/Broadcast UDP (SADP + ONVIF WS-Discovery)
-    2. Barrido activo concurrente TCP en las subredes locales (Puertos 37777, 8000, 554, 80)
-    3. Resolución e inspección de tabla ARP para MAC y seriales
-    """
+def _scan_udp_multicast(timeout=1.0) -> Dict[str, Dict]:
     devices_by_ip = {}
-
-    # 1. UDP Multicast & Broadcast Scanning (SADP + ONVIF)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.settimeout(1.0)
+    sock.settimeout(0.7)
 
     try:
         for group, port in [(SADP_GROUP, SADP_PORT), (ONVIF_GROUP, ONVIF_PORT)]:
@@ -251,7 +254,7 @@ def scan_network(timeout=3.0) -> List[Dict]:
                 pass
 
         start_time = time.time()
-        while time.time() - start_time < 1.0:
+        while time.time() - start_time < timeout:
             try:
                 data, addr = sock.recvfrom(4096)
                 raw = data.decode('utf-8', errors='ignore')
@@ -261,6 +264,8 @@ def scan_network(timeout=3.0) -> List[Dict]:
                     serial = _extract_xml(raw, "DeviceSN") or _extract_xml(raw, "SerialNumber") or f"SN-{host}"
                     model = _extract_xml(raw, "DeviceDescription") or _extract_xml(raw, "DeviceModel") or "CCTV Device"
                     port = _extract_xml(raw, "HttpPort") or "80"
+                    sw_ver = _extract_xml(raw, "SoftwareVersion")
+                    mac = _extract_xml(raw, "MAC")
                     brand = "Ezviz" if "<EZVIZCode>" in raw else "Hikvision"
 
                     is_dvr = any(k in model.lower() for k in ["ds-7", "ds-8", "dvr", "nvr", "x5s", "x5c"])
@@ -271,19 +276,20 @@ def scan_network(timeout=3.0) -> List[Dict]:
                         "port": port,
                         "brand": brand,
                         "type": "DVR" if is_dvr else "IPC",
-                        "channel_count": 8 if is_dvr else 1
+                        "channel_count": 8 if is_dvr else 1,
+                        "firmware_version": sw_ver,
+                        "mac_address": mac
                     }
-                elif "onvif" in raw.lower() or "ProbeMatches" in raw:
-                    if host not in devices_by_ip:
-                        devices_by_ip[host] = {
-                            "host": host,
-                            "model": "Cámara / NVR IP (ONVIF)",
-                            "serial": f"ONVIF-{host}",
-                            "port": "80",
-                            "brand": "Generico",
-                            "type": "IPC",
-                            "channel_count": 1
-                        }
+                elif ("onvif" in raw.lower() or "ProbeMatches" in raw) and host not in devices_by_ip:
+                    devices_by_ip[host] = {
+                        "host": host,
+                        "model": "Cámara / NVR IP (ONVIF)",
+                        "serial": f"ONVIF-{host}",
+                        "port": "80",
+                        "brand": "Generico",
+                        "type": "IPC",
+                        "channel_count": 1
+                    }
             except socket.timeout:
                 break
             except Exception:
@@ -292,6 +298,25 @@ def scan_network(timeout=3.0) -> List[Dict]:
         print(f"UDP Scan error: {e}")
     finally:
         sock.close()
+
+    return devices_by_ip
+
+
+def get_udp_discovery_map() -> Dict[str, Dict]:
+    """Descubrimiento rápido UDP (SADP + ONVIF) en subredes locales (< 0.8s)."""
+    return _scan_udp_multicast(timeout=0.8)
+
+
+def scan_network(timeout=3.0) -> List[Dict]:
+    """
+    Escanea la red local exhaustivamente para descubrir dispositivos CCTV (Dahua, Hikvision, Ezviz, ONVIF, etc.).
+    Combina:
+    1. Descubrimiento Multicast/Broadcast UDP (SADP + ONVIF WS-Discovery)
+    2. Barrido activo concurrente TCP en las subredes locales (Puertos 37777, 8000, 554, 80)
+    3. Resolución e inspección de tabla ARP para MAC y seriales
+    """
+    # 1. Descubrimiento rápido UDP
+    devices_by_ip = _scan_udp_multicast(timeout=1.0)
 
     # 2. Barrido activo concurrente TCP por las subredes locales
     try:
@@ -311,7 +336,6 @@ def scan_network(timeout=3.0) -> List[Dict]:
                         if host not in devices_by_ip:
                             devices_by_ip[host] = res
                         else:
-                            # Si ya existía de UDP, actualizar marca si el puerto 37777 reveló que es Dahua
                             if res["brand"] == "Dahua":
                                 devices_by_ip[host]["brand"] = "Dahua"
                                 devices_by_ip[host]["model"] = res["model"]

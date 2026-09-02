@@ -2,7 +2,7 @@
 ; Requiere Inno Setup 6 (https://jrsoftware.org/isinfo.php)
 
 #define MyAppName "Sistema de Gestión CCTV"
-#define MyAppVersion "1.7.6"
+#define MyAppVersion "1.9.0"
 #define MyAppPublisher "Empresa CCTV"
 #define MyAppExeName "cctv_backend.exe"
 #define MyAppLauncher "Iniciar_CCTV.bat"
@@ -16,7 +16,7 @@ DefaultDirName={autopf}\Sistema CCTV
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=auto
 OutputDir=Output
-OutputBaseFilename=CCTV_System_Setup_v1.7.6
+OutputBaseFilename=CCTV_System_Setup_v1.9.0
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

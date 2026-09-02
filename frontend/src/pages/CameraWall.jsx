@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   LayoutGrid, 
   Maximize2, 
@@ -35,6 +35,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import WebRTCPlayer from '../components/WebRTCPlayer';
+import { AudioTalkClient } from '../utils/audioTalkStream';
 
 const CameraCard = ({ 
   camera, 
@@ -288,6 +289,7 @@ const CameraWall = () => {
   // Referencias y estados para el micrófono e intercomunicador bidireccional
   const modalIframeRef = useRef(null);
   const audioMeterRef = useRef(null);
+  const audioTalkClientRef = useRef(null);
   const [audioVolume, setAudioVolume] = useState(0);
   const [micHelpModal, setMicHelpModal] = useState(false);
   const [micErrorMsg, setMicErrorMsg] = useState('');
@@ -324,9 +326,9 @@ const CameraWall = () => {
   const stopAudioMeter = () => {
     if (audioMeterRef.current) {
       try {
-        audioMeterRef.current.javascriptNode?.disconnect();
-        audioMeterRef.current.audioContext?.close();
-        audioMeterRef.current.stream?.getTracks().forEach(t => t.stop());
+        const { audioContext, javascriptNode } = audioMeterRef.current;
+        if (javascriptNode) javascriptNode.disconnect();
+        if (audioContext && audioContext.state !== 'closed') audioContext.close();
       } catch (e) {}
       audioMeterRef.current = null;
     }
@@ -334,32 +336,21 @@ const CameraWall = () => {
   };
 
   const handleStartTalk = async () => {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      const isHttp = window.location.protocol === 'http:';
-      const isNotLocal = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
-      if (isHttp && isNotLocal) {
-        setMicErrorMsg('El navegador restringe el uso del micrófono en conexiones HTTP sobre red local.');
-        setMicHelpModal(true);
-        return;
-      }
-      alert('Tu navegador no admite acceso al micrófono en este contexto.');
-      return;
-    }
+    if (!zoomedCamera) return;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
+      setMicErrorMsg('');
+      const client = new AudioTalkClient(zoomedCamera.id, (status) => {
+        if (status === 'error') {
+          console.warn('Voice talk WebSocket error');
         }
       });
+      const stream = await client.start();
+      audioTalkClientRef.current = client;
+
       setIsTalking(true);
       setModalAudioEnabled(true);
       startAudioMeter(stream);
-      if (modalIframeRef.current && modalIframeRef.current.contentWindow) {
-        modalIframeRef.current.contentWindow.postMessage({ type: 'start_talk' }, '*');
-      }
     } catch (err) {
       console.error('Error al solicitar micrófono:', err);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
@@ -372,11 +363,12 @@ const CameraWall = () => {
   };
 
   const handleStopTalk = () => {
+    if (audioTalkClientRef.current) {
+      audioTalkClientRef.current.stop();
+      audioTalkClientRef.current = null;
+    }
     setIsTalking(false);
     stopAudioMeter();
-    if (modalIframeRef.current && modalIframeRef.current.contentWindow) {
-      modalIframeRef.current.contentWindow.postMessage({ type: 'stop_talk' }, '*');
-    }
   };
 
   // Intervalos configurables (7, 10, 20, 30, 60, 120s) persistidos en localStorage
@@ -453,6 +445,29 @@ const CameraWall = () => {
     }
   });
 
+  const { data: devices = [] } = useQuery({
+    queryKey: ['devices'],
+    queryFn: async () => {
+      const res = await api.get('/devices/');
+      return res.data;
+    }
+  });
+
+  const getCameraDevice = useCallback((camera) => {
+    if (!camera) return null;
+    return devices.find(d => d.id === camera.device_id) || null;
+  }, [devices]);
+
+  const isTalkCapable = useMemo(() => {
+    if (!zoomedCamera) return false;
+    const dev = getCameraDevice(zoomedCamera);
+    if (!dev) return false;
+    const brand = String(dev.brand || '').toLowerCase();
+    const model = String(dev.model || '').toLowerCase();
+    const type = String(dev.device_type || '').toLowerCase();
+    return brand.includes('ezviz') || type === 'ipc' || model.includes('ipc') || model.includes('h8c') || model.includes('h6c') || model.includes('h3c');
+  }, [zoomedCamera, getCameraDevice]);
+
   // Filtrar cámaras activas
   const baseActiveCameras = useMemo(() => {
     return cameras.filter(c => c.is_active);
@@ -478,8 +493,10 @@ const CameraWall = () => {
     if (!zoomedCamera) return;
     const handleKeyDown = (e) => {
       if (e.key === 'Escape') {
+        handleStopTalk();
         setZoomedCamera(null);
       } else if (e.key === 'ArrowLeft' && activeCameras.length > 1) {
+        handleStopTalk();
         const currentIdx = activeCameras.findIndex(c => c.id === zoomedCamera.id);
         const prevIdx = currentIdx > 0 ? currentIdx - 1 : activeCameras.length - 1;
         const prevCam = activeCameras[prevIdx];
@@ -489,6 +506,7 @@ const CameraWall = () => {
         });
         setModalStreamKey(prev => prev + 1);
       } else if (e.key === 'ArrowRight' && activeCameras.length > 1) {
+        handleStopTalk();
         const currentIdx = activeCameras.findIndex(c => c.id === zoomedCamera.id);
         const nextIdx = currentIdx < activeCameras.length - 1 ? currentIdx + 1 : 0;
         const nextCam = activeCameras[nextIdx];
@@ -1458,10 +1476,11 @@ const CameraWall = () => {
                   <span className="hidden sm:inline">{modalAudioEnabled || isTalking ? 'Audio Activo' : 'Silenciado'}</span>
                 </button>
 
-                {/* Botón Intercomunicador / Hablar por Micrófono (Ezviz H6c / H8c / Hikvision / Dahua) */}
+                {/* Botón Intercomunicador / Hablar por Micrófono (Ezviz H6c / H8c / IP) */}
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' && (
                   <button 
                     type="button"
+                    disabled={!isTalkCapable}
                     onClick={() => {
                       if (!isTalking) {
                         handleStartTalk();
@@ -1469,15 +1488,25 @@ const CameraWall = () => {
                         handleStopTalk();
                       }
                     }}
-                    className={`p-2 rounded-lg transition-all text-xs font-bold flex items-center gap-1.5 active:scale-95 border cursor-pointer ${
+                    className={`p-2 rounded-lg transition-all text-xs font-bold flex items-center gap-1.5 active:scale-95 border cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                       isTalking 
                         ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-lg shadow-red-600/40 animate-pulse' 
-                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white border-zinc-700/50'
+                        : isTalkCapable
+                        ? 'bg-zinc-800 hover:bg-zinc-700 text-red-400 hover:text-white border-zinc-700/50'
+                        : 'bg-zinc-900 text-zinc-600 border-zinc-800'
                     }`}
-                    title={isTalking ? "Detener transmisión de voz" : "Hablar por el altavoz de la cámara"}
+                    title={
+                      !isTalkCapable 
+                        ? "Esta cámara analógica en grabador DVR no cuenta con bocina física de retorno" 
+                        : isTalking 
+                        ? "Detener transmisión de voz" 
+                        : "Hablar por el altavoz de la cámara (Intercomunicador Bidireccional)"
+                    }
                   >
-                    {isTalking ? <Mic size={14} className="text-white animate-bounce" /> : <Mic size={14} className="text-red-400" />}
-                    <span className="hidden sm:inline">{isTalking ? '🔴 Transmitiendo Voz' : '🎙️ Hablar por Cámara'}</span>
+                    {isTalking ? <Mic size={14} className="text-white animate-bounce" /> : <Mic size={14} className={isTalkCapable ? "text-red-400" : "text-zinc-600"} />}
+                    <span className="hidden sm:inline">
+                      {isTalking ? '🔴 Transmitiendo Voz' : isTalkCapable ? '🎙️ Hablar por Cámara' : 'Micrófono N/D'}
+                    </span>
                   </button>
                 )}
 
@@ -1588,7 +1617,7 @@ const CameraWall = () => {
                     title={zoomedCamera.name}
                     className="w-full h-full max-h-full max-w-full border-0 z-10"
                     scrolling="no"
-                    allow="autoplay; fullscreen; microphone; camera; display-capture"
+                    allow="autoplay; fullscreen"
                   />
                 ) : (
                   <img 
@@ -1599,7 +1628,7 @@ const CameraWall = () => {
                 )}
 
                 {/* Floating Intercom Control Bar (Overlay en la parte inferior del video) */}
-                {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' && (
+                {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' && isTalkCapable && (
                   <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 pointer-events-auto">
                     {isTalking ? (
                       <div className="bg-red-950/95 border-2 border-red-500/80 backdrop-blur-md rounded-2xl px-6 py-3 shadow-2xl flex items-center gap-4 animate-in slide-in-from-bottom-3 duration-300">

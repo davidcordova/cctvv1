@@ -37,6 +37,7 @@ def init_db_schema():
                     ("storage_location", "VARCHAR"),
                     ("has_video_signal", "BOOLEAN DEFAULT TRUE" if not is_sqlite else "BOOLEAN DEFAULT 1"),
                     ("audio_enabled", "BOOLEAN DEFAULT FALSE" if not is_sqlite else "BOOLEAN DEFAULT 0"),
+                    ("onvif_enabled", "BOOLEAN DEFAULT FALSE" if not is_sqlite else "BOOLEAN DEFAULT 0"),
                 ]
                 for col_name, col_type in camera_cols:
                     if col_name not in existing_cols:
@@ -51,6 +52,9 @@ def init_db_schema():
             if 'device' in tables:
                 existing_dev_cols = {col['name'] for col in inspector.get_columns('device')}
                 dev_cols = [
+                    ("model", "VARCHAR"),
+                    ("firmware_version", "VARCHAR"),
+                    ("mac_address", "VARCHAR"),
                     ("storage_media_type", "VARCHAR DEFAULT 'HDD SATA'"),
                     ("hdd_status", "VARCHAR DEFAULT 'Normal (Formato OK)'"),
                     ("hdd_capacity_total_gb", "DOUBLE PRECISION" if not is_sqlite else "FLOAT"),
@@ -58,6 +62,8 @@ def init_db_schema():
                     ("device_time", "TIMESTAMP WITHOUT TIME ZONE" if not is_sqlite else "DATETIME"),
                     ("time_offset_seconds", "INTEGER DEFAULT 0"),
                     ("time_synced_at", "TIMESTAMP WITHOUT TIME ZONE" if not is_sqlite else "DATETIME"),
+                    ("onvif_enabled", "BOOLEAN DEFAULT FALSE" if not is_sqlite else "BOOLEAN DEFAULT 0"),
+                    ("verification_code", "VARCHAR"),
                 ]
                 for col_name, col_type in dev_cols:
                     if col_name not in existing_dev_cols:

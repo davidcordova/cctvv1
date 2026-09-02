@@ -175,7 +175,7 @@
       const player = document.createElement('video-rtc');
       currentPlayer = player;
       player.src = `ws://${host}:1984/api/ws?src=${encodeURIComponent(src)}`;
-      player.mode = 'webrtc,mse,hls';
+      player.mode = isTalk ? 'webrtc' : 'webrtc,mse,hls';
       player.media = isTalk ? 'video,audio,microphone' : 'video,audio';
       player.background = true;
       

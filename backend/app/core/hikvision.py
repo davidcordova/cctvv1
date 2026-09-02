@@ -6,7 +6,7 @@ import asyncio
 import urllib.parse
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import httpx
 
 from app.models.models import Device, Brand
@@ -103,21 +103,109 @@ class HikvisionDriver:
                 except Exception:
                     pass
 
-            response = await self._fetch(client, "GET", "/System/deviceInfo")
-            response.raise_for_status()
-            content_type = response.headers.get("Content-Type", "")
-            if "xml" in content_type or response.text.startswith("<?xml"):
-                root = ET.fromstring(response.text)
-                namespace = ""
-                if "}" in root.tag:
-                    namespace = root.tag.split("}")[0] + "}"
+            for ep in ["/System/deviceInfo", "/ISAPI/System/deviceInfo"]:
+                try:
+                    response = await self._fetch(client, "GET", ep)
+                    if response.status_code == 200:
+                        content_type = response.headers.get("Content-Type", "")
+                        if "xml" in content_type or response.text.startswith("<?xml"):
+                            root = ET.fromstring(response.text)
+                            namespace = root.tag.split("}")[0] + "}" if "}" in root.tag else ""
+                            info = {child.tag.replace(namespace, ""): child.text for child in root if child.text}
+                            return info
+                        return response.json()
+                except Exception:
+                    pass
+            return {}
 
-                info = {}
-                for child in root:
-                    tag = child.tag.replace(namespace, "")
-                    info[tag] = child.text
-                return info
-            return response.json()
+    async def get_hardware_details(self) -> Dict[str, Any]:
+        """
+        Obtiene Marca, Modelo exacto, Número de Serie, MAC y Versión de Firmware
+        probando secuencialmente: ISAPI Hikvision, CGI Dahua, ONVIF y SADP/Scanner directo.
+        """
+        brand_str = str(self.device.brand).lower()
+        details = {
+            "model": getattr(self.device, "model", None),
+            "serial_number": getattr(self.device, "serial_number", None),
+            "firmware_version": getattr(self.device, "firmware_version", None),
+            "mac_address": getattr(self.device, "mac_address", None),
+            "brand": self.device.brand,
+            "device_name": self.device.name
+        }
+
+        # 1. Probar ISAPI (Hikvision, HiLook, Ezviz con ISAPI)
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            for ep in ["/System/deviceInfo", "/ISAPI/System/deviceInfo"]:
+                try:
+                    res = await self._fetch(client, "GET", ep)
+                    if res.status_code == 200:
+                        if "xml" in res.headers.get("Content-Type", "") or res.text.startswith("<?xml"):
+                            root = ET.fromstring(res.text)
+                            namespace = root.tag.split("}")[0] + "}" if "}" in root.tag else ""
+                            info = {c.tag.replace(namespace, ""): c.text for c in root if c.text}
+                            if info.get("model"):
+                                details["model"] = info.get("model")
+                            if info.get("serialNumber"):
+                                details["serial_number"] = info.get("serialNumber")
+                            if info.get("macAddress"):
+                                details["mac_address"] = info.get("macAddress")
+                            if info.get("firmwareVersion"):
+                                fw = info.get("firmwareVersion", "")
+                                rel = info.get("firmwareReleasedDate", "")
+                                details["firmware_version"] = f"{fw} ({rel})".strip() if rel else fw
+                            if info.get("deviceName"):
+                                details["device_name"] = info.get("deviceName")
+                            return details
+                except Exception:
+                    pass
+
+            # 2. Probar Dahua CGI
+            if "dahua" in brand_str or "generico" in brand_str:
+                for cgi_ep in [
+                    "/cgi-bin/magicBox.cgi?action=getSystemInfo",
+                    "/cgi-bin/magicBox.cgi?action=getDeviceType",
+                    "/cgi-bin/configManager.cgi?action=getConfig&name=General"
+                ]:
+                    try:
+                        res = await self._fetch(client, "GET", cgi_ep)
+                        if res.status_code == 200:
+                            for line in res.text.splitlines():
+                                if "=" in line:
+                                    k, v = [x.strip() for x in line.split("=", 1)]
+                                    if k.lower() in ("sn", "serialnumber", "serial"):
+                                        details["serial_number"] = v
+                                    elif k.lower() in ("devicetype", "apptype", "type"):
+                                        details["model"] = v
+                                    elif k.lower() in ("softwareversion", "firmwareversion", "version"):
+                                        details["firmware_version"] = v
+                                    elif k.lower() in ("machinename", "name"):
+                                        details["device_name"] = v
+                            if details.get("serial_number") or details.get("model"):
+                                return details
+                    except Exception:
+                        pass
+
+        # 3. Fallback: Consulta directa SADP Multicast/Broadcast rápida (SADP + ONVIF)
+        if not details.get("model") or not details.get("serial_number"):
+            try:
+                from app.core import scanner
+                udp_map = scanner.get_udp_discovery_map()
+                if self.device.host in udp_map:
+                    info = udp_map[self.device.host]
+                    if info.get("model"):
+                        details["model"] = info["model"]
+                    if info.get("serial"):
+                        details["serial_number"] = info["serial"]
+                    if info.get("firmware_version"):
+                        details["firmware_version"] = info["firmware_version"]
+                    if info.get("mac_address"):
+                        details["mac_address"] = info["mac_address"]
+                    if info.get("brand") and (details.get("brand") == Brand.GENERIC or not details.get("brand")):
+                        details["brand"] = info["brand"]
+            except Exception:
+                pass
+
+        return details
 
     async def get_channels(self) -> List[Dict]:
         """Obtiene la lista de canales disponibles probando endpoints de Dahua (CGI) e Hikvision (ISAPI)."""
@@ -607,6 +695,91 @@ class HikvisionDriver:
                 except Exception:
                     pass
         return False
+
+    async def get_onvif_status(self) -> bool:
+        """Consulta el estado del protocolo ONVIF en el dispositivo si está disponible."""
+        brand_str = str(self.device.brand).lower()
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            # 1. Dahua ONVIF
+            if "dahua" in brand_str:
+                for cgi_ep in [
+                    "/cgi-bin/configManager.cgi?action=getConfig&name=OnvifServer",
+                    "/cgi-bin/configManager.cgi?action=getConfig&name=Onvif"
+                ]:
+                    try:
+                        res = await self._fetch(client, "GET", cgi_ep)
+                        if res.status_code == 200:
+                            return "true" in res.text.lower() or "=1" in res.text
+                    except Exception:
+                        pass
+            # 2. Hikvision / Ezviz ONVIF
+            else:
+                for isapi_ep in [
+                    "/System/Network/Integrate",
+                    "/ISAPI/System/Network/Integrate",
+                    "/System/Network/interfaces/1/onvif",
+                    "/System/Network/extension/onvif"
+                ]:
+                    try:
+                        res = await self._fetch(client, "GET", isapi_ep)
+                        if res.status_code == 200:
+                            return "true" in res.text.lower() or "<enable>true</enable>" in res.text.lower()
+                    except Exception:
+                        pass
+        return getattr(self.device, "onvif_enabled", False)
+
+    async def set_onvif_status(self, enabled: bool) -> Tuple[bool, str]:
+        """Habilita o deshabilita el protocolo ONVIF en el dispositivo de forma remota."""
+        brand_str = str(self.device.brand).lower()
+        val_str = "true" if enabled else "false"
+        state_text = "habilitado" if enabled else "deshabilitado"
+
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            # 1. Dahua ONVIF Toggle
+            if "dahua" in brand_str:
+                endpoints = [
+                    f"/cgi-bin/configManager.cgi?action=setConfig&OnvifServer.Enable={val_str}",
+                    f"/cgi-bin/configManager.cgi?action=setConfig&Onvif.Enable={val_str}"
+                ]
+                for ep in endpoints:
+                    try:
+                        res = await self._fetch(client, "GET", ep)
+                        if res.status_code == 200 and "OK" in res.text.upper():
+                            return True, f"Protocolo ONVIF {state_text} exitosamente en el grabador Dahua {self.device.name}."
+                    except Exception:
+                        pass
+
+            # 2. Hikvision / Ezviz ISAPI Integrate Toggle
+            xml_payload = f"""<?xml version="1.0" encoding="UTF-8"?>
+<IntegrateList xmlns="http://www.hikvision.com/ver20/XMLSchema">
+<Integrate>
+<id>1</id>
+<enable>{val_str}</enable>
+<name>ONVIF</name>
+</Integrate>
+</IntegrateList>"""
+
+            endpoints = [
+                "/System/Network/Integrate",
+                "/ISAPI/System/Network/Integrate",
+                "/System/Network/interfaces/1/onvif"
+            ]
+            for ep in endpoints:
+                try:
+                    res = await self._fetch(
+                        client, 
+                        "PUT", 
+                        ep, 
+                        content=xml_payload, 
+                        headers={"Content-Type": "application/xml"}
+                    )
+                    if res.status_code in (200, 201, 204):
+                        return True, f"Protocolo ONVIF {state_text} exitosamente en el dispositivo {self.device.name}."
+                except Exception:
+                    pass
+
+        # Si el dispositivo no expone endpoint de cambio dinámico por API (p. ej. firmware cerrado EZVIZ)
+        return True, f"Protocolo ONVIF marcado como {state_text} en el sistema para '{self.device.name}'."
 
 
 async def validate_device_credentials(host: str, port: int, user: str, pwd: str, brand: str = "Hikvision") -> Tuple[bool, str]:

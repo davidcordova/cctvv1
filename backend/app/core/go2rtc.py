@@ -67,6 +67,11 @@ def sync_go2rtc_config():
                         and "ezviz" not in str(device.brand).lower()
                     )
 
+                    # Si ONVIF o audio bidireccional está habilitado, añadir backchannel
+                    onvif_active = getattr(camera, "onvif_enabled", False) or getattr(device, "onvif_enabled", False)
+                    user_enc = urllib.parse.quote(device.username or "admin", safe="")
+                    pass_enc = urllib.parse.quote(device.password or "", safe="")
+
                     if is_dvr and device.password:
                         sub_url = generate_substream_url(
                             device.host,
@@ -75,33 +80,41 @@ def sync_go2rtc_config():
                             camera.channel,
                             device.brand
                         ).split("#")[0]
-                        # Substream con fallback automático al stream principal si el DVR no tiene subcanal habilitado
+                        
+                        stream_list = []
                         if sub_url != main_url:
-                            streams[f"camera_{camera.id}"] = [sub_url, main_url]
-                        else:
-                            streams[f"camera_{camera.id}"] = main_url
-                        streams[f"camera_{camera.id}_hd"] = main_url
+                            stream_list.append(sub_url)
+                        stream_list.append(main_url)
+                        if onvif_active:
+                            stream_list.append(f"{main_url}#backchannel=0")
+
+                        streams[f"camera_{camera.id}"] = stream_list if len(stream_list) > 1 else stream_list[0]
+                        streams[f"camera_{camera.id}_hd"] = [f"{main_url}#backchannel=0", main_url] if onvif_active else main_url
+                        streams[f"camera_{camera.id}_talk"] = [f"{main_url}#backchannel=1", main_url]
                     elif device and "ezviz" in str(device.brand).lower():
-                        # Cámaras Ezviz (ej. H6c, C6N, H8c, H3c): Probar URL directa y variantes de streaming estándar
-                        user_enc = urllib.parse.quote(device.username or "admin", safe="")
-                        pass_enc = urllib.parse.quote(device.password or "", safe="")
-                        ezviz_sources = [
-                            main_url,
-                            f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/Streaming/Channels/101",
-                            f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/h264/ch1/main/av_stream",
-                            f"isapi://{user_enc}:{pass_enc}@{device.host}:{device.port or 80}/"
-                        ]
-                        seen_s = set()
-                        uniq_ezviz = [s for s in ezviz_sources if not (s in seen_s or seen_s.add(s))]
-                        streams[f"camera_{camera.id}"] = uniq_ezviz
-                        streams[f"camera_{camera.id}_hd"] = uniq_ezviz
+                        # Cámaras Ezviz (ej. H6c, C6N, H8c, H3c, TY1, CS-CV246): Flujos RTSP limpios (SD, HD y Talk)
+                        ezviz_sub = f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/Streaming/Channels/102"
+                        ezviz_main = f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/Streaming/Channels/101"
+                        ezviz_alt = f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/h264/ch1/main/av_stream"
+                        ezviz_backchannel_1 = f"{ezviz_main}#backchannel=1"
+
+                        # Flujo ligero para muro (substream con fallback a mainstream)
+                        streams[f"camera_{camera.id}"] = [ezviz_sub, ezviz_main, ezviz_alt, main_url]
+                        
+                        # Flujo HD prioritario
+                        streams[f"camera_{camera.id}_hd"] = [ezviz_main, ezviz_sub, ezviz_alt, main_url]
+                        
+                        # Flujo dedicado para intercomunicador de voz
+                        streams[f"camera_{camera.id}_talk"] = [ezviz_backchannel_1, ezviz_main]
                     else:
-                        streams[f"camera_{camera.id}"] = main_url
-                        streams[f"camera_{camera.id}_hd"] = main_url
+                        onvif_src = f"onvif://{user_enc}:{pass_enc}@{device.host}:{device.port or 80}/"
+                        streams[f"camera_{camera.id}"] = [main_url, onvif_src, f"{main_url}#backchannel=0"]
+                        streams[f"camera_{camera.id}_hd"] = [main_url, onvif_src, f"{main_url}#backchannel=0"]
+                        streams[f"camera_{camera.id}_talk"] = [f"{main_url}#backchannel=1", main_url]
         
         candidates = get_local_ip_candidates()
         import shutil
-        ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
+        ffmpeg_bin = shutil.which("ffmpeg") or ""
 
         config = {
             "api": {
@@ -115,11 +128,11 @@ def sync_go2rtc_config():
                 "listen": ":8555",
                 "candidates": candidates
             },
-            "ffmpeg": {
-                "bin": ffmpeg_bin
-            },
             "streams": streams
         }
+        if ffmpeg_bin and (os.path.isabs(ffmpeg_bin) and os.path.exists(ffmpeg_bin) or shutil.which(ffmpeg_bin)):
+            config["ffmpeg"] = {"bin": ffmpeg_bin}
+
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(config, f, default_flow_style=False)
         print(f"go2rtc config synced with {len(streams)} active streams and LAN candidates {candidates} to {config_path}.")
@@ -131,8 +144,8 @@ def sync_go2rtc_config():
                 if res.status_code == 200:
                     for src_name, rtsp_entry in streams.items():
                         if isinstance(rtsp_entry, list):
-                            for s in rtsp_entry:
-                                client.put("http://localhost:1984/api/streams", params={"src": s, "name": src_name})
+                            params = [("name", src_name)] + [("src", s) for s in rtsp_entry]
+                            client.put("http://localhost:1984/api/streams", params=params)
                         else:
                             client.put("http://localhost:1984/api/streams", params={"src": rtsp_entry, "name": src_name})
         except (httpx.ConnectError, httpx.ConnectTimeout):

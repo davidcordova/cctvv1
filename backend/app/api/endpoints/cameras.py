@@ -171,3 +171,45 @@ async def get_webrtc_status():
             return {"available": True}
         except Exception:
             return {"available": False}
+
+
+from fastapi import WebSocket, WebSocketDisconnect
+from app.core.ezviz_talk import CameraAudioTalkBridge
+
+@router.websocket("/{camera_id}/talk-ws")
+async def camera_talk_websocket(websocket: WebSocket, camera_id: int):
+    """
+    Túnel de audio WebSocket bidireccional de ultra-baja latencia.
+    Transmite los fragmentos de voz del micrófono en tiempo real hacia la cámara.
+    """
+    await websocket.accept()
+    
+    bridge = CameraAudioTalkBridge(camera_id)
+    if not bridge.device:
+        await websocket.send_json({"type": "error", "message": "Cámara o grabador no encontrado en la base de datos"})
+        await websocket.close()
+        return
+
+    init_res = await bridge.start()
+    if init_res.get("status") == "error":
+        await websocket.send_json({"type": "error", "message": init_res.get("message", "Error al iniciar el puente de audio")})
+        await websocket.close()
+        return
+
+    await websocket.send_json({
+        "type": "ready",
+        "message": init_res.get("message"),
+        "is_ezviz": init_res.get("is_ezviz", False)
+    })
+
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            if data:
+                await bridge.push_chunk(data)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        await bridge.stop()
