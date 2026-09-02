@@ -37,6 +37,7 @@ frontend/dist-ssr/
 .env
 backend/.env
 *.env
+*session.json
 
 # IDE & temporary
 .vscode/

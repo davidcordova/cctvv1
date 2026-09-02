@@ -47,7 +47,7 @@ def main():
     run_cmd(f'"{py_exe}" -m PyInstaller --noconfirm "{spec_path}"', cwd=PROJECT_DIR)
 
     log("Step 4: Asegurando binarios externos (go2rtc.exe y configuraciones)...")
-    for fname in ["go2rtc.exe", "go2rtc.yaml"]:
+    for fname in ["go2rtc.exe", "go2rtc.yaml", "ezviz_session.json"]:
         f_src = os.path.join(BACKEND_DIR, fname)
         f_dest = os.path.join(OUTPUT_DIR, fname)
         if os.path.exists(f_src):
