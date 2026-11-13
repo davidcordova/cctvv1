@@ -37,11 +37,13 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api, { deviceService } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { formatStorageInfo } from '../utils/storageUtils';
 import { AudioTalkClient } from '../utils/audioTalkStream';
 
 const DeviceMgmt = () => {
   const { user } = useAuth();
+  const toast = useToast();
   const isAdmin = user?.role === 'admin';
   const isViewer = user?.role === 'viewer';
   const queryClient = useQueryClient();
@@ -273,11 +275,11 @@ const DeviceMgmt = () => {
     setSyncingDeviceIds(prev => new Set([...prev, device.id]));
     try {
       const res = await api.post(`/devices/${device.id}/sync-time`);
-      alert(res.data.message);
+      toast.success(res.data.message);
       queryClient.invalidateQueries({ queryKey: ['devices'] });
       queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
     } catch (err) {
-      alert('Error al sincronizar fecha y hora: ' + (err.response?.data?.detail || err.message));
+      toast.error('Error al sincronizar fecha y hora: ' + (err.response?.data?.detail || err.message));
     } finally {
       setSyncingDeviceIds(prev => {
         const next = new Set(prev);
@@ -287,29 +289,35 @@ const DeviceMgmt = () => {
     }
   };
 
-  // Sincronizar hora de todos los grabadores en lote
+  // Sincronizar hora de todos los grabadores en lote (paralelo en backend)
   const handleSyncAllTime = async () => {
     const onlineDevices = devices.filter(d => d.is_online);
     if (onlineDevices.length === 0) {
-      alert('No hay grabadores en línea disponibles para sincronizar hora.');
+      toast.warning('No hay grabadores en línea disponibles para sincronizar hora.');
       return;
     }
     setIsSyncingAll(true);
     try {
-      let syncedCount = 0;
-      for (const dev of onlineDevices) {
-        try {
-          await api.post(`/devices/${dev.id}/sync-time`);
-          syncedCount++;
-        } catch (e) {
-          console.error(`Error sincronizando hora en ${dev.name}:`, e);
-        }
-      }
+      const res = await api.post('/devices/sync-all-time');
+      const results = res.data?.results || [];
+      const syncedCount = results.filter(r => r.status === 'synced').length;
+      const driftedCount = results.filter(r => r.status === 'drifted').length;
+      const errorCount = results.filter(r => r.status === 'error').length;
+
       queryClient.invalidateQueries({ queryKey: ['devices'] });
       queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
-      alert(`✓ Sincronización horaria completada en ${syncedCount} de ${onlineDevices.length} grabadores.`);
+
+      if (errorCount > 0 || driftedCount > 0) {
+        toast.warning(
+          res.data?.message || `Sincronización: ${syncedCount} sincronizados, ${driftedCount} con desfase, ${errorCount} errores.`
+        );
+      } else {
+        toast.success(
+          res.data?.message || `Sincronización horaria completada en ${syncedCount} de ${onlineDevices.length} grabadores.`
+        );
+      }
     } catch (err) {
-      alert('Error en la sincronización horaria masiva: ' + (err.response?.data?.detail || err.message));
+      toast.error('Error en la sincronización horaria masiva: ' + (err.response?.data?.detail || err.message));
     } finally {
       setIsSyncingAll(false);
     }
@@ -318,7 +326,7 @@ const DeviceMgmt = () => {
   // Sincronizar almacenamiento de un equipo
   const handleSyncStorage = async (device) => {
     if (!device.is_online) {
-      alert(`El dispositivo "${device.name}" se encuentra fuera de línea.`);
+      toast.warning(`El dispositivo "${device.name}" se encuentra fuera de línea.`);
       return;
     }
     setSyncingStorageIds(prev => new Set(prev).add(device.id));
@@ -327,9 +335,9 @@ const DeviceMgmt = () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] });
       queryClient.invalidateQueries({ queryKey: ['cameras'] });
       queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
-      alert(`✓ ${res.data.message}`);
+      toast.success(res.data.message);
     } catch (err) {
-      alert(`Error al verificar almacenamiento de ${device.name}: ${err.response?.data?.detail || err.message}`);
+      toast.error(`Error al verificar almacenamiento de ${device.name}: ${err.response?.data?.detail || err.message}`);
     } finally {
       setSyncingStorageIds(prev => {
         const next = new Set(prev);
@@ -342,7 +350,7 @@ const DeviceMgmt = () => {
   // Habilitar o deshabilitar protocolo ONVIF en el grabador / cámara IP
   const handleToggleDeviceOnvif = async (device) => {
     if (!device.is_online) {
-      alert(`El dispositivo "${device.name}" se encuentra fuera de línea.`);
+      toast.warning(`El dispositivo "${device.name}" se encuentra fuera de línea.`);
       return;
     }
     const nextState = !device.onvif_enabled;
@@ -357,9 +365,9 @@ const DeviceMgmt = () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] });
       queryClient.invalidateQueries({ queryKey: ['cameras'] });
       queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
-      alert(`✓ ${res.data.message}`);
+      toast.success(res.data.message);
     } catch (err) {
-      alert(`Error al cambiar protocolo ONVIF en ${device.name}: ${err.response?.data?.detail || err.message}`);
+      toast.error(`Error al cambiar protocolo ONVIF en ${device.name}: ${err.response?.data?.detail || err.message}`);
     } finally {
       setTogglingOnvifIds(prev => {
         const next = new Set(prev);
@@ -372,7 +380,7 @@ const DeviceMgmt = () => {
   // Sincronizar información de hardware de un equipo (Marca, Modelo, S/N, MAC, Firmware)
   const handleSyncHardware = async (device) => {
     if (!device.is_online) {
-      alert(`El dispositivo "${device.name}" se encuentra fuera de línea.`);
+      toast.warning(`El dispositivo "${device.name}" se encuentra fuera de línea.`);
       return;
     }
     setSyncingHardwareIds(prev => new Set([...prev, device.id]));
@@ -381,9 +389,9 @@ const DeviceMgmt = () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] });
       queryClient.invalidateQueries({ queryKey: ['cameras'] });
       queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
-      alert(`✓ ${res.data.message}`);
+      toast.success(res.data.message);
     } catch (err) {
-      alert(`Error al sincronizar datos de hardware en ${device.name}: ${err.response?.data?.detail || err.message}`);
+      toast.error(`Error al sincronizar datos de hardware en ${device.name}: ${err.response?.data?.detail || err.message}`);
     } finally {
       setSyncingHardwareIds(prev => {
         const next = new Set(prev);
@@ -401,9 +409,9 @@ const DeviceMgmt = () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] });
       queryClient.invalidateQueries({ queryKey: ['cameras'] });
       queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
-      alert(`✓ ${res.data.message}`);
+      toast.success(res.data.message);
     } catch (err) {
-      alert(`Error al sincronizar hardware en lote: ${err.response?.data?.detail || err.message}`);
+      toast.error(`Error al sincronizar hardware en lote: ${err.response?.data?.detail || err.message}`);
     } finally {
       setIsSyncingAllHardware(false);
     }
@@ -451,7 +459,7 @@ const DeviceMgmt = () => {
     mutationFn: (newDevice) => deviceService.createDevice(newDevice),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] });
-      alert('✓ Dispositivo verificado y agregado exitosamente.');
+      toast.success('Dispositivo verificado y agregado exitosamente.');
       closeModal();
     },
     onError: (error) => {
@@ -463,7 +471,7 @@ const DeviceMgmt = () => {
         message = detail;
       }
       setTestStatus({ success: false, message });
-      alert('Error al añadir dispositivo:\n' + message);
+      toast.error('Error al añadir dispositivo: ' + message);
     }
   });
 
@@ -472,7 +480,7 @@ const DeviceMgmt = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['devices'] });
       queryClient.invalidateQueries({ queryKey: ['cameras'] });
-      alert('✓ Dispositivo actualizado correctamente.');
+      toast.success('Dispositivo actualizado correctamente.');
       closeModal();
     },
     onError: (error) => {
@@ -484,7 +492,7 @@ const DeviceMgmt = () => {
         message = detail;
       }
       setTestStatus({ success: false, message });
-      alert('Error al editar dispositivo:\n' + message);
+      toast.error('Error al editar dispositivo: ' + message);
     }
   });
 
@@ -495,7 +503,7 @@ const DeviceMgmt = () => {
       const response = await api.get('/devices/scan');
       setDiscoveredDevices(response.data);
     } catch (error) {
-      alert('Error al escanear la red: ' + error.message);
+      toast.error('Error al escanear la red: ' + error.message);
     } finally {
       setIsScanning(false);
     }
@@ -567,7 +575,7 @@ const DeviceMgmt = () => {
   };
 
   return (
-    <div className="p-8 space-y-6">
+    <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-[1800px] mx-auto">
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Gestión de Dispositivos y Grabadores</h1>
@@ -586,8 +594,10 @@ const DeviceMgmt = () => {
                 queryClient.invalidateQueries({ queryKey: ['devices'] });
                 queryClient.invalidateQueries({ queryKey: ['cameras'] });
                 queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
+                toast.success('Diagnóstico en vivo actualizado');
               } catch (e) {
                 console.error(e);
+                toast.error('Error al actualizar el diagnóstico: ' + (e.response?.data?.detail || e.message));
               } finally {
                 setTimeout(() => setIsRefreshingMonitor(false), 800);
               }
@@ -895,8 +905,8 @@ const DeviceMgmt = () => {
                           : 'Hora Sincronizada'}
                       </span>
                       {device.device_time && (
-                        <p className="text-[10px] text-zinc-400 font-mono">
-                          Hora DVR: {new Date(device.device_time).toLocaleTimeString('es-PE')}
+                        <p className="text-[10px] text-zinc-300 font-mono mt-0.5">
+                          {new Date(device.device_time).toLocaleDateString('es-PE')} {new Date(device.device_time).toLocaleTimeString('es-PE')}
                         </p>
                       )}
                     </div>
@@ -993,8 +1003,8 @@ const DeviceMgmt = () => {
                                 onClick={() => {
                                   if(confirm('¿Reiniciar dispositivo ' + device.name + '?')) {
                                     api.post('/devices/' + device.id + '/reboot').then(res => {
-                                      alert(res.data.message);
-                                    }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
+                                      toast.success(res.data.message);
+                                    }).catch(err => toast.error('Error: ' + (err.response?.data?.detail || err.message)));
                                   }
                                 }}
                                 className="p-2 hover:bg-yellow-500/10 rounded-lg text-zinc-400 hover:text-yellow-500 transition-colors cursor-pointer"
@@ -1006,8 +1016,8 @@ const DeviceMgmt = () => {
                                 onClick={() => {
                                   if(confirm('¿Apagar dispositivo ' + device.name + '? Algunos modelos no soportan apagado por software.')) {
                                     api.post('/devices/' + device.id + '/shutdown').then(res => {
-                                      alert(res.data.message);
-                                    }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
+                                      toast.warning(res.data.message);
+                                    }).catch(err => toast.error('Error: ' + (err.response?.data?.detail || err.message)));
                                   }
                                 }}
                                 className="p-2 hover:bg-rose-500/10 rounded-lg text-zinc-400 hover:text-rose-400 transition-colors cursor-pointer"
@@ -1024,7 +1034,8 @@ const DeviceMgmt = () => {
                                   queryClient.invalidateQueries({ queryKey: ['devices'] });
                                   queryClient.invalidateQueries({ queryKey: ['cameras'] });
                                   queryClient.invalidateQueries({ queryKey: ['reports'] });
-                                }).catch(err => alert('Error: ' + (err.response?.data?.detail || err.message)));
+                                  toast.success(`Dispositivo "${device.name}" eliminado.`);
+                                }).catch(err => toast.error('Error: ' + (err.response?.data?.detail || err.message)));
                               }
                             }}
                             className="p-2 hover:bg-rose-500/10 rounded-lg text-zinc-400 hover:text-rose-400 transition-colors cursor-pointer"
@@ -1227,15 +1238,23 @@ const DeviceMgmt = () => {
                               allow="autoplay; fullscreen"
                             />
                           ) : (
-                            <img 
-                              src={snapshotSrc} 
-                              alt={camera.name}
-                              className="w-full h-full object-cover group-hover/vid:scale-105 transition-transform duration-300"
-                              onError={(e) => { 
-                                e.target.onerror = null; 
-                                e.target.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="%233f3f46" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
-                              }}
-                            />
+                            <div className="w-full h-full relative flex items-center justify-center bg-zinc-950">
+                              <img 
+                                src={snapshotSrc} 
+                                alt={camera.name}
+                                className="w-full h-full object-contain bg-black group-hover/vid:scale-[1.02] transition-transform duration-300"
+                                onError={(e) => { 
+                                  e.target.style.display = 'none';
+                                  const fallbackEl = e.target.parentElement?.querySelector('.cam-fallback-err');
+                                  if (fallbackEl) fallbackEl.classList.remove('hidden');
+                                }}
+                              />
+                              <div className="cam-fallback-err hidden absolute inset-0 bg-zinc-950/90 flex flex-col items-center justify-center p-3 text-center gap-1.5 z-10 select-none">
+                                <AlertTriangle size={20} className="text-amber-400" />
+                                <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-wider">Canal Sin Señal</span>
+                                <p className="text-[10px] text-zinc-500 line-clamp-1">Verifique conexión del canal {camera.channel}</p>
+                              </div>
+                            </div>
                           )}
                           
                           {/* Channel Badge & Recording Indicator */}
@@ -1356,7 +1375,7 @@ const DeviceMgmt = () => {
                                       next.delete(camera.id);
                                       return next;
                                     });
-                                    alert('Error: ' + err.message);
+                                    toast.error('Error: ' + err.message);
                                   });
                                 }}
                                 className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all min-w-[70px] text-center cursor-pointer ${
@@ -1444,30 +1463,33 @@ const DeviceMgmt = () => {
 
       {/* Add/Edit Device Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden scale-in">
-            <div className="p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/50">
-              <h2 className="text-xl font-bold">{editingDevice ? 'Editar Grabador / Dispositivo' : 'Nuevo Dispositivo'}</h2>
-              <button onClick={closeModal} className="text-zinc-500 hover:text-zinc-300">✕</button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-2xl max-h-[90vh] shadow-2xl overflow-hidden scale-in flex flex-col">
+            <div className="p-4 sm:p-5 border-b border-zinc-800 flex justify-between items-center bg-zinc-900/80 shrink-0">
+              <div>
+                <h2 className="text-lg sm:text-xl font-bold text-white">{editingDevice ? 'Editar Grabador / Dispositivo' : 'Nuevo Dispositivo'}</h2>
+                <p className="text-xs text-zinc-400">Configure los parámetros de red y credenciales de acceso</p>
+              </div>
+              <button onClick={closeModal} className="text-zinc-400 hover:text-zinc-200 p-1.5 rounded-lg hover:bg-zinc-800 cursor-pointer transition-colors">✕</button>
             </div>
             
-            <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2 space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">Nombre</label>
-                  <input required className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} />
+            <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-4 overflow-y-auto flex-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="sm:col-span-2 space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-400 uppercase">Nombre</label>
+                  <input required className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:border-blue-500 focus:outline-none" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} placeholder="Ej. DVR Principal - Entrada" />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">Host / IP</label>
-                  <input required className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono" value={formData.host} onChange={(e) => setFormData({...formData, host: e.target.value})} />
+                  <label className="text-xs font-bold text-zinc-400 uppercase">Host / IP</label>
+                  <input required className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none" value={formData.host} onChange={(e) => setFormData({...formData, host: e.target.value})} placeholder="192.168.1.100" />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">Puerto</label>
-                  <input type="number" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.port} onChange={(e) => setFormData({...formData, port: parseInt(e.target.value) || 80})} />
+                  <label className="text-xs font-bold text-zinc-400 uppercase">Puerto HTTP / RTSP</label>
+                  <input type="number" className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:border-blue-500 focus:outline-none" value={formData.port} onChange={(e) => setFormData({...formData, port: parseInt(e.target.value) || 80})} />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">Marca</label>
-                  <select className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.brand} onChange={(e) => setFormData({...formData, brand: e.target.value})}>
+                  <label className="text-xs font-bold text-zinc-400 uppercase">Marca</label>
+                  <select className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:border-blue-500 focus:outline-none cursor-pointer" value={formData.brand} onChange={(e) => setFormData({...formData, brand: e.target.value})}>
                     <option value="Hikvision">Hikvision</option>
                     <option value="Ezviz">Ezviz</option>
                     <option value="Dahua">Dahua</option>
@@ -1477,9 +1499,9 @@ const DeviceMgmt = () => {
                   </select>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">Tipo</label>
+                  <label className="text-xs font-bold text-zinc-400 uppercase">Tipo</label>
                   <select 
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" 
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:border-blue-500 focus:outline-none cursor-pointer" 
                     value={formData.device_type} 
                     onChange={(e) => {
                       const newType = e.target.value;
@@ -1493,10 +1515,10 @@ const DeviceMgmt = () => {
                   </select>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">
+                  <label className="text-xs font-bold text-zinc-400 uppercase">
                     {formData.device_type === 'IPC' ? 'Canales / Lentes' : 'Canales del Grabador'}
                   </label>
-                  <select className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" value={formData.channel_count} onChange={(e) => setFormData({...formData, channel_count: parseInt(e.target.value)})}>
+                  <select className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:border-blue-500 focus:outline-none cursor-pointer" value={formData.channel_count} onChange={(e) => setFormData({...formData, channel_count: parseInt(e.target.value)})}>
                     <option value={1}>1 Canal (Cámara Individual)</option>
                     <option value={2}>2 Canales (Doble Lente)</option>
                     <option value={4}>4 Canales</option>
@@ -1507,57 +1529,66 @@ const DeviceMgmt = () => {
                   </select>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">Modelo de Dispositivo</label>
+                  <label className="text-xs font-bold text-zinc-400 uppercase">Usuario</label>
+                  <input 
+                    required 
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:border-blue-500 focus:outline-none" 
+                    value={formData.username} 
+                    onChange={(e) => setFormData({...formData, username: e.target.value})} 
+                    placeholder="admin"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-400 uppercase">Modelo de Dispositivo</label>
                   <input 
                     placeholder="Ej. DS-7208HQHI-F1/N" 
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono" 
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none" 
                     value={formData.model || ''} 
                     onChange={(e) => setFormData({...formData, model: e.target.value})} 
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">Número de Serie</label>
+                  <label className="text-xs font-bold text-zinc-400 uppercase">Número de Serie</label>
                   <input 
                     placeholder="Ej. DS-7208HQHI... / SN" 
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono" 
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none" 
                     value={formData.serial_number || ''} 
                     onChange={(e) => setFormData({...formData, serial_number: e.target.value})} 
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">Dirección MAC</label>
+                  <label className="text-xs font-bold text-zinc-400 uppercase">Dirección MAC</label>
                   <input 
                     placeholder="Ej. 18:68:cb:a4:f3:78" 
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono" 
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none" 
                     value={formData.mac_address || ''} 
                     onChange={(e) => setFormData({...formData, mac_address: e.target.value})} 
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">Versión de Firmware</label>
+                  <label className="text-xs font-bold text-zinc-400 uppercase">Versión de Firmware</label>
                   <input 
                     placeholder="Ej. V3.4.84" 
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono" 
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm font-mono text-zinc-200 focus:border-blue-500 focus:outline-none" 
                     value={formData.firmware_version || ''} 
                     onChange={(e) => setFormData({...formData, firmware_version: e.target.value})} 
                   />
                 </div>
-                <div className="col-span-2 space-y-1.5">
-                  <label className="text-xs font-bold text-zinc-500 uppercase">
-                    {editingDevice ? 'Nueva Contraseña (Opcional)' : 'Contraseña'}
+                <div className="sm:col-span-2 space-y-1.5">
+                  <label className="text-xs font-bold text-zinc-400 uppercase">
+                    {editingDevice ? 'Nueva Contraseña (Opcional)' : 'Contraseña del Dispositivo'}
                   </label>
                   <input 
                     type="password" 
                     required={!editingDevice} 
                     placeholder={editingDevice ? 'Dejar en blanco para mantener la actual' : '••••••••'}
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm" 
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2 text-sm text-zinc-200 focus:border-blue-500 focus:outline-none" 
                     value={formData.password} 
                     onChange={(e) => setFormData({...formData, password: e.target.value})} 
                   />
                 </div>
 
-                {/* Código de Verificación Ezviz / Intercomunicador */}
-                <div className="col-span-2 space-y-1.5 pt-1">
+                <div className="sm:col-span-2 space-y-1.5 pt-1">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-bold text-zinc-300 uppercase flex items-center gap-1.5">
                       <Key size={13} className="text-amber-400" />
@@ -1578,14 +1609,13 @@ const DeviceMgmt = () => {
                   </p>
                 </div>
 
-                {/* Opción de Habilitar Protocolo ONVIF */}
-                <div className="col-span-2 pt-2 border-t border-zinc-800/80 flex items-center justify-between">
+                <div className="sm:col-span-2 pt-2 border-t border-zinc-800/80 flex items-center justify-between">
                   <label className="text-xs font-bold text-zinc-300 flex items-center gap-2 cursor-pointer select-none">
                     <input 
                       type="checkbox" 
                       checked={formData.onvif_enabled ?? false} 
                       onChange={(e) => setFormData({...formData, onvif_enabled: e.target.checked})}
-                      className="rounded border-zinc-800 bg-zinc-950 text-cyan-500 focus:ring-0"
+                      className="rounded border-zinc-800 bg-zinc-950 text-cyan-500 focus:ring-0 cursor-pointer"
                     />
                     <span className="flex items-center gap-1.5">
                       <Globe size={14} className="text-cyan-400" />
@@ -1596,7 +1626,6 @@ const DeviceMgmt = () => {
                 </div>
               </div>
 
-              {/* Panel de prueba de conexión */}
               <div className="pt-2">
                 {testStatus && (
                   <div className={`p-3 rounded-lg text-xs font-medium mb-3 flex items-start gap-2 ${
@@ -1627,25 +1656,23 @@ const DeviceMgmt = () => {
                   type="button" 
                   onClick={handleTestConnection}
                   disabled={testStatus?.loading || !formData.host}
-                  className="w-full py-2 px-4 bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-200 border border-zinc-700/60 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                  className="w-full py-2.5 px-4 bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-200 border border-zinc-700/60 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                 >
                   <RefreshCw size={13} className={testStatus?.loading ? 'animate-spin' : ''} />
                   {testStatus?.loading ? 'Comprobando dispositivo...' : '🔍 Probar Conexión y Credenciales'}
                 </button>
               </div>
               
-              <div className="pt-3 flex gap-3">
-                <button type="button" onClick={closeModal} className="flex-1 px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg font-bold text-sm cursor-pointer transition-all">Cancelar</button>
+              <div className="pt-4 flex gap-3 border-t border-zinc-800 mt-2 shrink-0">
+                <button type="button" onClick={closeModal} className="flex-1 px-4 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl font-bold text-sm cursor-pointer transition-all">Cancelar</button>
                 <button 
                   type="submit" 
-                  disabled={addDeviceMutation.isPending || editDeviceMutation.isPending || testStatus?.loading} 
-                  className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold text-sm disabled:opacity-50 cursor-pointer shadow-lg shadow-blue-600/20 transition-all flex items-center justify-center gap-2"
+                  disabled={addDeviceMutation.isPending || editDeviceMutation.isPending} 
+                  className="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-sm shadow-lg shadow-blue-600/20 disabled:opacity-50 cursor-pointer transition-all"
                 >
-                  {(addDeviceMutation.isPending || editDeviceMutation.isPending) && <RefreshCw className="animate-spin" size={15} />}
-                  {addDeviceMutation.isPending || editDeviceMutation.isPending ? 'Verificando y Guardando...' : 'Guardar Dispositivo'}
+                  {addDeviceMutation.isPending || editDeviceMutation.isPending ? 'Guardando...' : (editingDevice ? 'Actualizar Grabador' : 'Guardar Dispositivo')}
                 </button>
               </div>
-
             </form>
           </div>
         </div>
@@ -1866,7 +1893,7 @@ const DeviceMgmt = () => {
           </div>
 
           {/* Video Player Container Maximizado al 100% */}
-          <div className="flex-1 w-full h-[calc(100vh-3.5rem)] flex items-center justify-center p-0 md:p-2 bg-black relative overflow-hidden" onClick={(e) => e.stopPropagation()}>
+          <div className="flex-1 min-h-0 w-full flex items-center justify-center p-0 sm:p-2 md:p-4 bg-black relative overflow-hidden" onClick={(e) => e.stopPropagation()}>
             {/* Botón Cámara Anterior */}
             {activeDeviceCameras.length > 1 && (
               <button
@@ -1883,7 +1910,7 @@ const DeviceMgmt = () => {
                   setModalAudioEnabled(false);
                   setModalStreamKey(prev => prev + 1);
                 }}
-                className="absolute left-3 md:left-6 top-1/2 -translate-y-1/2 z-30 p-2.5 md:p-3 rounded-full bg-zinc-900/80 hover:bg-blue-600 text-zinc-300 hover:text-white backdrop-blur-md border border-zinc-700/50 shadow-2xl transition-all active:scale-90 cursor-pointer"
+                className="absolute left-2 sm:left-4 md:left-6 top-1/2 -translate-y-1/2 z-30 p-2 sm:p-3 rounded-full bg-zinc-900/80 hover:bg-blue-600 text-zinc-300 hover:text-white backdrop-blur-md border border-zinc-700/50 shadow-2xl transition-all active:scale-90 cursor-pointer"
                 title="Cámara Anterior (Flecha Izquierda)"
               >
                 <ChevronLeft size={24} />
@@ -1891,7 +1918,7 @@ const DeviceMgmt = () => {
             )}
 
             {/* Video Player Box */}
-            <div className="w-full h-full max-w-full max-h-full flex items-center justify-center relative bg-black">
+            <div className={`${videoFit === 'contain' ? 'aspect-video w-full max-w-full max-h-full' : 'w-full h-full'} flex items-center justify-center relative bg-black overflow-hidden rounded-none sm:rounded-xl sm:border sm:border-zinc-800/60 shadow-2xl`}>
               {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' ? (
                 <iframe 
                   ref={modalIframeRef}
@@ -1906,15 +1933,15 @@ const DeviceMgmt = () => {
                 <img 
                   src={zoomedCamera.url || `${api.defaults.baseURL}/cameras/${zoomedCamera.id}/snapshot?t=${Date.now()}`} 
                   alt={zoomedCamera.name} 
-                  className={`w-full h-full max-h-full max-w-full ${videoFit === 'cover' ? 'object-cover' : 'object-contain'}`}
+                  className={`w-full h-full max-h-full max-w-full bg-black ${videoFit === 'cover' ? 'object-cover' : 'object-contain'}`}
                 />
               )}
 
               {/* Floating Intercom Control Bar */}
               {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' && isTalkCapable && (
-                <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 pointer-events-auto">
+                <div className="absolute bottom-3 sm:bottom-6 inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-40 flex flex-col items-center gap-2 pointer-events-auto">
                   {isTalking ? (
-                    <div className="bg-red-950/95 border-2 border-red-500/80 backdrop-blur-md rounded-2xl px-6 py-3 shadow-2xl flex items-center gap-4 animate-in slide-in-from-bottom-3 duration-300">
+                    <div className="bg-red-950/95 border-2 border-red-500/80 backdrop-blur-md rounded-2xl px-4 sm:px-6 py-2.5 sm:py-3 shadow-2xl flex flex-wrap items-center justify-center gap-3 sm:gap-4 animate-in slide-in-from-bottom-3 duration-300 max-w-full">
                       <div className="flex items-center gap-2">
                         <span className="w-3.5 h-3.5 rounded-full bg-red-500 animate-ping" />
                         <Mic size={22} className="text-red-400 animate-bounce" />

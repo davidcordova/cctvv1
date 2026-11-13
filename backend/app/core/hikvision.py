@@ -1,4 +1,5 @@
 import re
+import time
 import socket
 import base64
 import hashlib
@@ -41,6 +42,19 @@ def generate_substream_url(host: str, username: str, password: str, channel_id: 
 
 
 WORKING_SNAPSHOT_ENDPOINTS: Dict[str, Tuple[int, str]] = {}
+WORKING_HTTP_PORTS: Dict[str, int] = {}
+UNSUPPORTED_SNAPSHOT_HOSTS: Dict[str, float] = {}
+LAST_TELEMETRY_SYNC_TS: float = 0.0
+
+
+def get_last_telemetry_sync_ts() -> float:
+    return LAST_TELEMETRY_SYNC_TS
+
+
+def set_last_telemetry_sync_ts(ts: Optional[float] = None) -> float:
+    global LAST_TELEMETRY_SYNC_TS
+    LAST_TELEMETRY_SYNC_TS = ts if ts is not None else time.time()
+    return LAST_TELEMETRY_SYNC_TS
 
 
 class HikvisionDriver:
@@ -72,7 +86,9 @@ class HikvisionDriver:
         """Intenta la petición en los puertos HTTP disponibles respetando si es ruta ISAPI o CGI directo."""
         last_exception = None
         for port in self.http_ports:
-            if path.startswith("/cgi-bin") or path.startswith("http"):
+            if path.startswith("/ISAPI"):
+                url = f"http://{self.device.host}:{port}{path}"
+            elif path.startswith("/cgi-bin") or path.startswith("http"):
                 url = f"http://{self.device.host}:{port}{path}"
             else:
                 url = f"http://{self.device.host}:{port}/ISAPI{path}"
@@ -282,61 +298,84 @@ class HikvisionDriver:
             print(f"XML parse error: {e}")
             return []
 
-    async def get_snapshot(self, channel_id: int) -> bytes:
-        """Obtiene una captura (JPEG) probando varios patrones de URL con caché de endpoint exitoso."""
+    async def get_snapshot(self, channel_id: int) -> Optional[bytes]:
+        """Obtiene una captura JPEG probando patrones ISAPI/CGI con caché de endpoint y puerto activo."""
+        if time.time() - UNSUPPORTED_SNAPSHOT_HOSTS.get(self.device.host, 0.0) < 300.0:
+            return None
         cache_key = f"{self.device.host}:{channel_id}"
         brand_str = str(self.device.brand).lower()
 
+        chan_num = channel_id // 100 if (channel_id >= 100 and channel_id % 100 == 1) else channel_id
+
         if "dahua" in brand_str:
-            chan_num = channel_id
-            if chan_num >= 100 and chan_num % 100 == 1:
-                chan_num = chan_num // 100
             endpoints = [
                 f"/cgi-bin/snapshot.cgi?channel={chan_num}",
-                f"/cgi-bin/snapshot.cgi?channel={chan_num}&type=0"
+                f"/cgi-bin/snapshot.cgi?channel={chan_num}&subtype=0",
+                f"/cgi-bin/snapshot.cgi?channel={chan_num}&subtype=1",
             ]
         else:
             chan_str = str(channel_id)
-            candidates = []
-            if chan_str.endswith("01"):
-                candidates = [chan_str, str(int(chan_str[:-2]))]
+            if chan_str.endswith("01") and channel_id >= 100:
+                candidates = [chan_str, str(chan_num), f"{chan_num}02"]
             elif channel_id < 100:
-                candidates = [f"{channel_id}01", str(channel_id), f"{channel_id + 100}01"]
+                candidates = [f"{channel_id}01", str(channel_id), f"{channel_id}02", f"{channel_id + 100}01"]
             else:
                 candidates = [chan_str]
 
             endpoints = []
             for c in candidates:
                 endpoints.append(f"/Streaming/channels/{c}/picture")
+                endpoints.append(f"/ContentMgmt/StreamingProxy/channels/{c}/picture")
                 endpoints.append(f"/ContentMgmt/InputProxy/channels/{c}/picture")
                 endpoints.append(f"/System/Video/inputs/channels/{c}/picture")
 
-        # 1. Si ya conocemos el endpoint y puerto que funcionó antes para este canal, probarlo primero
+        def _build_url(port: int, ep: str) -> str:
+            if ep.startswith("/cgi-bin") or ep.startswith("/ISAPI"):
+                return f"http://{self.device.host}:{port}{ep}"
+            return f"http://{self.device.host}:{port}/ISAPI{ep}"
+
+        def _is_jpeg(content: bytes) -> bool:
+            return bool(content and len(content) > 1000 and content.startswith(b"\xff\xd8"))
+
+        # 1. Usar caché de endpoint exitoso conocido para este canal (~80-150ms)
         if cache_key in WORKING_SNAPSHOT_ENDPOINTS:
             cached_port, cached_ep = WORKING_SNAPSHOT_ENDPOINTS[cache_key]
-            url = f"http://{self.device.host}:{cached_port}{cached_ep if cached_ep.startswith('/cgi-bin') else '/ISAPI' + cached_ep}"
-            async with httpx.AsyncClient(timeout=1.2) as client:
+            url = _build_url(cached_port, cached_ep)
+            async with httpx.AsyncClient(timeout=1.5) as client:
                 try:
                     res = await self._fetch_url(client, "GET", url)
-                    if res.status_code == 200 and len(res.content) > 100:
+                    if res.status_code == 200 and _is_jpeg(res.content):
                         return res.content
                 except Exception:
-                    WORKING_SNAPSHOT_ENDPOINTS.pop(cache_key, None)
+                    pass
+            WORKING_SNAPSHOT_ENDPOINTS.pop(cache_key, None)
 
-        # 2. Probar candidatos con timeout rápido (máx 1.0s por petición)
-        async with httpx.AsyncClient(timeout=1.0) as client:
-            for port in self.http_ports:
+        # 2. Priorizar puerto HTTP previamente confirmado vivo en este host
+        ordered_ports = list(self.http_ports)
+        known_port = WORKING_HTTP_PORTS.get(self.device.host)
+        if known_port and known_port in ordered_ports:
+            ordered_ports.remove(known_port)
+            ordered_ports.insert(0, known_port)
+
+        # 3. Probar candidatos con timeout rápido; abortar puerto si falla conexión TCP
+        async with httpx.AsyncClient(timeout=1.2) as client:
+            for port in ordered_ports:
                 for ep in endpoints:
-                    url = f"http://{self.device.host}:{port}{ep if ep.startswith('/cgi-bin') else '/ISAPI' + ep}"
+                    url = _build_url(port, ep)
                     try:
                         res = await self._fetch_url(client, "GET", url)
-                        if res.status_code == 200 and len(res.content) > 100:
+                        if res.status_code < 500:
+                            WORKING_HTTP_PORTS[self.device.host] = port
+                        if res.status_code == 200 and _is_jpeg(res.content):
                             WORKING_SNAPSHOT_ENDPOINTS[cache_key] = (port, ep)
                             return res.content
+                    except (httpx.ConnectError, httpx.ConnectTimeout, OSError):
+                        break
                     except Exception:
                         pass
 
-        raise ValueError(f"No se pudo obtener imagen para canal {channel_id} en {self.device.host}")
+        UNSUPPORTED_SNAPSHOT_HOSTS[self.device.host] = time.time()
+        return None
 
     def get_rtsp_url(self, channel_id: int) -> str:
         """Genera la URL RTSP para un canal específico delegando en generate_rtsp_url."""
@@ -351,60 +390,142 @@ class HikvisionDriver:
     async def get_device_time(self) -> Dict:
         """Obtiene la fecha y hora configurada en el dispositivo y calcula el desfase con el servidor."""
         brand_str = str(self.device.brand).lower()
-        async with httpx.AsyncClient(timeout=2.5) as client:
+        now_local = datetime.now()
+
+        async with httpx.AsyncClient(timeout=3.0) as client:
             # Dahua time
             if "dahua" in brand_str:
-                try:
-                    res = await self._fetch(client, "GET", "/cgi-bin/global.cgi?action=getCurrentTime")
-                    if res.status_code == 200 and "result=" in res.text:
-                        time_str = res.text.split("result=")[-1].strip()
-                        dev_dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-                        now_local = datetime.now()
+                for port in self.http_ports:
+                    try:
+                        res = await self._fetch(client, "GET", "/cgi-bin/global.cgi?action=getCurrentTime")
+                        if res.status_code == 200 and "result=" in res.text:
+                            time_str = res.text.split("result=")[-1].strip()
+                            dev_dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+                            offset_sec = int((dev_dt - now_local).total_seconds())
+                            return {
+                                "device_time": dev_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                                "offset_seconds": offset_sec,
+                                "is_drifted": abs(offset_sec) > 300,
+                                "raw": time_str
+                            }
+                    except Exception as e:
+                        pass
+
+            # Hikvision / Ezviz time
+            try:
+                response = await self._fetch(client, "GET", "/System/time")
+                if response.status_code == 200:
+                    root = ET.fromstring(response.text)
+                    local_time_elem = None
+                    for elem in root.iter():
+                        if elem.tag.endswith("localTime") and elem.text and elem.text.strip():
+                            local_time_elem = elem
+                            break
+
+                    if local_time_elem is not None and local_time_elem.text:
+                        time_str = local_time_elem.text.strip()
+                        dev_dt = None
+                        try:
+                            # Python 3.11+ soporta ISO completo con zona horaria
+                            dev_dt = datetime.fromisoformat(time_str)
+                            if dev_dt.tzinfo is not None:
+                                now_tz = datetime.now().astimezone(dev_dt.tzinfo)
+                                offset_sec = int((dev_dt - now_tz).total_seconds())
+                            else:
+                                offset_sec = int((dev_dt - now_local).total_seconds())
+                        except Exception:
+                            # Limpiar sufijo de zona horaria preservando la fecha con guiones
+                            clean_str = re.sub(r'([+-]\d{2}:\d{2}|Z)$', '', time_str)
+                            if "T" in clean_str:
+                                dev_dt = datetime.fromisoformat(clean_str)
+                            else:
+                                dev_dt = datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
+                            offset_sec = int((dev_dt - now_local).total_seconds())
+
+                        if dev_dt:
+                            return {
+                                "device_time": dev_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                                "offset_seconds": offset_sec,
+                                "is_drifted": abs(offset_sec) > 300,
+                                "raw": time_str
+                            }
+            except Exception as e:
+                print(f"Error fetching device time from {self.device.host}: {e}")
+
+            # Si HTTP ISAPI/CGI no respondió, intentar obtener el reloj interno real vía cabecera RTSP Date (puerto 554)
+            rtsp_time = await asyncio.to_thread(self._get_rtsp_device_time, now_local)
+            if rtsp_time:
+                return rtsp_time
+
+            # Si falla la comunicación, reportar estado no disponible (NUNCA falsear 0 desfase)
+            return {
+                "device_time": None,
+                "offset_seconds": None,
+                "is_drifted": False,
+                "error": "No fue posible consultar la hora del grabador",
+                "raw": None
+            }
+
+    def _get_rtsp_device_time(self, now_local: datetime) -> Optional[Dict]:
+        """Obtiene el reloj interno del grabador/cámara desde la cabecera Date del servidor RTSP (puerto 554)."""
+        from email.utils import parsedate_to_datetime
+        creds = base64.b64encode(f"{self.device.username}:{self.device.password}".encode("utf-8")).decode("ascii")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        try:
+            sock.connect((self.device.host, 554))
+            # 1. Probar OPTIONS (rápido y soportado directamente por cámaras Ezviz / Live555)
+            opt_req = f"OPTIONS rtsp://{self.device.host}:554/Streaming/Channels/101 RTSP/1.0\r\nCSeq: 1\r\n\r\n"
+            sock.sendall(opt_req.encode("utf-8"))
+            resp = sock.recv(2048).decode("utf-8", errors="ignore")
+
+            # 2. Si OPTIONS no incluyó cabecera Date (ej. HIK Media Server en DVR Hikvision), probar DESCRIBE autenticado
+            if "date:" not in resp.lower():
+                desc_req = (
+                    f"DESCRIBE rtsp://{self.device.host}:554/Streaming/Channels/101 RTSP/1.0\r\n"
+                    f"CSeq: 2\r\n"
+                    f"Authorization: Basic {creds}\r\n"
+                    f"Accept: application/sdp\r\n\r\n"
+                )
+                sock.sendall(desc_req.encode("utf-8"))
+                resp = sock.recv(2048).decode("utf-8", errors="ignore")
+
+            for line in resp.splitlines():
+                if line.lower().startswith("date:"):
+                    raw_date = " ".join(line.split(":", 1)[1].strip().split())
+                    dev_dt = None
+                    # Formato Live555 / Ezviz ("Thu, Oct 29 2026 16:11:46 GMT" -> hora OSD local de la cámara)
+                    try:
+                        dev_dt = datetime.strptime(raw_date, "%a, %b %d %Y %H:%M:%S GMT")
+                    except ValueError:
+                        pass
+
+                    # Formato RFC 2822 estándar ("Thu, 29 Oct 2026 21:01:50 GMT" -> HIK Media Server en UTC)
+                    if dev_dt is None:
+                        dt_parsed = parsedate_to_datetime(raw_date)
+                        if dt_parsed.tzinfo is not None:
+                            local_tz = datetime.now().astimezone().tzinfo
+                            dev_dt = dt_parsed.astimezone(local_tz).replace(tzinfo=None)
+                        else:
+                            dev_dt = dt_parsed
+
+                    if dev_dt:
                         offset_sec = int((dev_dt - now_local).total_seconds())
                         return {
                             "device_time": dev_dt.strftime("%Y-%m-%d %H:%M:%S"),
                             "offset_seconds": offset_sec,
                             "is_drifted": abs(offset_sec) > 300,
-                            "raw": time_str
+                            "raw": raw_date,
+                            "source": "RTSP"
                         }
-                except Exception as e:
-                    print(f"Error fetching Dahua device time from {self.device.host}: {e}")
-
-            # Hikvision time
-            now_local = datetime.now().astimezone()
+        except Exception:
+            pass
+        finally:
             try:
-                response = await self._fetch(client, "GET", "/System/time")
-                if response.status_code == 200:
-                    root = ET.fromstring(response.text)
-                    local_time_elem = root.find(".//{*}localTime") or root.find(".//localTime")
-                    if local_time_elem is not None and local_time_elem.text:
-                        time_str = local_time_elem.text.strip()
-                        try:
-                            dev_dt = datetime.fromisoformat(time_str)
-                            if dev_dt.tzinfo is None:
-                                dev_dt = dev_dt.replace(tzinfo=now_local.tzinfo)
-                            offset_sec = int((dev_dt - now_local).total_seconds())
-                        except Exception:
-                            clean_str = time_str.split("+")[0].split("-")[0] if "T" in time_str else time_str
-                            dev_dt = datetime.fromisoformat(clean_str)
-                            offset_sec = int((dev_dt - datetime.now()).total_seconds())
-
-                        return {
-                            "device_time": dev_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                            "offset_seconds": offset_sec,
-                            "is_drifted": abs(offset_sec) > 300,
-                            "raw": time_str
-                        }
-            except Exception as e:
-                print(f"Error fetching device time from {self.device.host}: {e}")
-
-            # Fallback
-            return {
-                "device_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "offset_seconds": 0,
-                "is_drifted": False,
-                "raw": datetime.now().isoformat()
-            }
+                sock.close()
+            except Exception:
+                pass
+        return None
 
     async def sync_time(self) -> Dict:
         """Sincroniza la fecha y hora del grabador con la hora actual del servidor local."""
@@ -426,6 +547,7 @@ class HikvisionDriver:
                         }
                 except Exception as e:
                     print(f"Error syncing Dahua time: {e}")
+            raise ConnectionError(f"El grabador Dahua {self.device.name} ({self.device.host}) no aceptó el ajuste de hora.")
 
         # Hikvision / Ezviz Time Sync
         iso_now = now.strftime("%Y-%m-%dT%H:%M:%S-05:00")
@@ -447,14 +569,10 @@ class HikvisionDriver:
                             "synced_time": iso_now,
                             "message": f"Hora del grabador {self.device.name} sincronizada exitosamente a las {now.strftime('%H:%M:%S')} (Servidor Local)."
                         }
-                except Exception:
+                except Exception as e:
                     pass
 
-        return {
-            "success": True,
-            "synced_time": iso_now,
-            "message": f"Hora calibrada correctamente con el servidor local a las {now.strftime('%H:%M:%S')}"
-        }
+        raise ConnectionError(f"No se pudo sincronizar la hora con el grabador {self.device.name} ({self.device.host}). Verifique la conexión y credenciales.")
 
     async def get_storage_status(self) -> Dict:
         """Verifica el estado del almacenamiento (HDD SATA, MicroSD, SSD o NAS), capacidad y espacio libre real."""
@@ -512,7 +630,10 @@ class HikvisionDriver:
                     response = await self._fetch(client, "GET", ep)
                     if response.status_code == 200 and ("<" in response.text):
                         root = ET.fromstring(response.text)
-                        hdd_elements = root.findall(".//{*}hdd") or root.findall(".//hdd") or root.findall(".//{*}volume")
+                        hdd_elements = [
+                            el for el in root.iter()
+                            if (el.tag.split("}")[-1] if "}" in el.tag else el.tag) in ("hdd", "volume")
+                        ]
 
                         if hdd_elements:
                             total_cap_mb = 0.0
@@ -522,25 +643,29 @@ class HikvisionDriver:
                             unformatted = False
 
                             for hdd in hdd_elements:
-                                cap_elem = hdd.find(".//{*}capacity") or hdd.find("capacity")
-                                free_elem = hdd.find(".//{*}freeSpace") or hdd.find("freeSpace")
-                                type_elem = hdd.find(".//{*}hddType") or hdd.find("hddType") or hdd.find(".//{*}type")
-                                stat_elem = hdd.find(".//{*}status") or hdd.find("status")
+                                child_map = {
+                                    (c.tag.split("}")[-1] if "}" in c.tag else c.tag): (c.text.strip() if c.text else "")
+                                    for c in hdd
+                                }
+                                cap_text = child_map.get("capacity", "")
+                                free_text = child_map.get("freeSpace", "")
+                                type_text = child_map.get("hddType") or child_map.get("type") or ""
+                                stat_text = child_map.get("status", "")
 
-                                if cap_elem is not None and cap_elem.text:
+                                if cap_text:
                                     try:
-                                        total_cap_mb += float(cap_elem.text.strip())
+                                        total_cap_mb += float(cap_text)
                                     except ValueError:
                                         pass
 
-                                if free_elem is not None and free_elem.text:
+                                if free_text:
                                     try:
-                                        total_free_mb += float(free_elem.text.strip())
+                                        total_free_mb += float(free_text)
                                     except ValueError:
                                         pass
 
-                                if type_elem is not None and type_elem.text:
-                                    t_str = type_elem.text.strip().upper()
+                                if type_text:
+                                    t_str = type_text.upper()
                                     if "SATA" in t_str or "LOCAL" in t_str or "HDD" in t_str:
                                         detected_types.add("HDD SATA")
                                     elif "SD" in t_str or "MMC" in t_str:
@@ -550,11 +675,11 @@ class HikvisionDriver:
                                     elif "NAS" in t_str or "NFS" in t_str or "SMB" in t_str:
                                         detected_types.add("NAS / Red")
 
-                                if stat_elem is not None and stat_elem.text:
-                                    s_str = stat_elem.text.strip().lower()
-                                    if s_str in ("error", "smart_error", "damaged", "failed"):
+                                if stat_text:
+                                    s_str = stat_text.lower()
+                                    if s_str in ("error", "smart_error", "damaged", "failed", "broken"):
                                         has_error = True
-                                    elif s_str in ("unformatted", "not_initialized", "noformat"):
+                                    elif s_str in ("unformatted", "not_initialized", "noformat", "uninitialized"):
                                         unformatted = True
 
                             if total_cap_mb > 0:
@@ -579,7 +704,7 @@ class HikvisionDriver:
                                 }
 
                         # Si la respuesta fue 200 pero la lista de discos está vacía (cámara IP sin MicroSD)
-                        if dev_type_str == "IPC" or (self.device.channel_count or 1) <= 1:
+                        if "IPC" in dev_type_str or (self.device.channel_count or 1) <= 1:
                             return {
                                 "hdd_status": "Grabación Centralizada en NVR",
                                 "total_gb": 0.0,
@@ -591,7 +716,7 @@ class HikvisionDriver:
                     pass
 
             # Si es cámara IP y no respondió endpoint de almacenamiento local
-            if dev_type_str == "IPC" or (self.device.channel_count or 1) <= 1:
+            if "IPC" in dev_type_str or (self.device.channel_count or 1) <= 1:
                 return {
                     "hdd_status": "Grabación Centralizada en NVR",
                     "total_gb": 0.0,
@@ -618,42 +743,120 @@ class HikvisionDriver:
                 "media_type": "Desconectado"
             }
 
-    async def get_snapshot(self, channel: int) -> Optional[bytes]:
-        """Obtiene la captura JPEG de alta resolución directamente del hardware (CGI/ISAPI)."""
+    async def get_channels_status(self) -> Dict[int, Dict[str, Any]]:
+        """Consulta señal de video real y estado de pistas de grabación por canal vía ISAPI/CGI."""
+        channels_status: Dict[int, Dict[str, Any]] = {}
         brand_str = str(self.device.brand).lower()
-        async with httpx.AsyncClient(timeout=4.0) as client:
-            # 1. Dahua Snapshot
-            if "dahua" in brand_str:
-                for cgi_ep in [
-                    f"/cgi-bin/snapshot.cgi?channel={channel}",
-                    f"/cgi-bin/snapshot.cgi?channel={channel}&subtype=0",
-                    f"/cgi-bin/snapshot.cgi?channel={channel}&subtype=1"
-                ]:
-                    try:
-                        res = await self._fetch(client, "GET", cgi_ep)
-                        if res.status_code == 200 and len(res.content) > 1000:
-                            return res.content
-                    except Exception:
-                        pass
 
-            # 2. Hikvision / Ezviz / Hilook ISAPI Picture
-            candidates = [
-                f"/ISAPI/Streaming/channels/{channel}01/picture",
-                f"/ISAPI/Streaming/channels/{channel}02/picture",
-                f"/ISAPI/Streaming/channels/{channel}/picture",
-                f"/ISAPI/ContentMgmt/StreamingProxy/channels/{channel}01/picture",
-                f"/ISAPI/ContentMgmt/StreamingProxy/channels/{channel}/picture",
-                f"/Streaming/channels/{channel}01/picture"
-            ]
-            for ep in candidates:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            if "dahua" in brand_str:
                 try:
-                    res = await self._fetch(client, "GET", ep)
-                    if res.status_code == 200 and len(res.content) > 1000:
-                        return res.content
+                    res = await self._fetch(client, "GET", "/cgi-bin/eventManager.cgi?action=getEventIndexes&code=VideoLoss")
+                    if res.status_code == 200 and "channels" in res.text.lower():
+                        lost_channels = set()
+                        for line in res.text.splitlines():
+                            if "=" in line:
+                                _, val = line.split("=", 1)
+                                for tok in val.strip().split(","):
+                                    if tok.strip().isdigit():
+                                        lost_channels.add(int(tok.strip()) + 1)
+                        total_ch = self.device.channel_count or 1
+                        for ch in range(1, total_ch + 1):
+                            channels_status[ch] = {
+                                "has_video_signal": ch not in lost_channels,
+                                "is_recording": None,
+                                "resolution": None,
+                            }
                 except Exception:
                     pass
+                return channels_status
 
-        return None
+            # 1. Hikvision / HiLook DVR analógico/TurboHD: /System/Video/inputs/channels
+            try:
+                res = await self._fetch(client, "GET", "/System/Video/inputs/channels")
+                if res.status_code == 200 and "<" in res.text:
+                    root = ET.fromstring(res.text)
+                    for elem in root.iter():
+                        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                        if tag == "VideoInputChannel":
+                            child_map = {
+                                (c.tag.split("}")[-1] if "}" in c.tag else c.tag): (c.text.strip() if c.text else "")
+                                for c in elem
+                            }
+                            id_str = child_map.get("id", "")
+                            if not id_str.isdigit():
+                                continue
+                            val = int(id_str)
+                            chan_num = val // 100 if (val >= 100 and val % 100 == 1) else val
+                            res_desc = child_map.get("resDesc", "").strip()
+                            res_upper = res_desc.upper()
+                            vid_enabled = child_map.get("videoInputEnabled", "").lower()
+
+                            has_signal: Optional[bool] = None
+                            if vid_enabled == "false" or res_upper == "NO VIDEO" or "NOSIGNAL" in res_upper:
+                                has_signal = False
+                            elif res_desc and vid_enabled != "false":
+                                has_signal = True
+
+                            entry = channels_status.setdefault(chan_num, {"has_video_signal": None, "is_recording": None, "resolution": None})
+                            if has_signal is not None:
+                                entry["has_video_signal"] = has_signal
+                            if res_desc:
+                                entry["resolution"] = res_desc
+            except Exception:
+                pass
+
+            # 2. Hikvision NVR / Canales IP Proxy: /ContentMgmt/InputProxy/channels/status
+            try:
+                res = await self._fetch(client, "GET", "/ContentMgmt/InputProxy/channels/status")
+                if res.status_code == 200 and "<" in res.text:
+                    root = ET.fromstring(res.text)
+                    for elem in root.iter():
+                        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                        if tag == "InputProxyChannelStatus":
+                            child_map = {
+                                (c.tag.split("}")[-1] if "}" in c.tag else c.tag): (c.text.strip() if c.text else "")
+                                for c in elem
+                            }
+                            id_str = child_map.get("id", "")
+                            if not id_str.isdigit():
+                                continue
+                            val = int(id_str)
+                            chan_num = val // 100 if (val >= 100 and val % 100 == 1) else val
+                            online_str = child_map.get("online", "").lower()
+                            if online_str in ("true", "false"):
+                                entry = channels_status.setdefault(chan_num, {"has_video_signal": None, "is_recording": None, "resolution": None})
+                                entry["has_video_signal"] = (online_str == "true")
+            except Exception:
+                pass
+
+            # 3. Hikvision Pistas de Grabación: /ContentMgmt/record/tracks
+            try:
+                res = await self._fetch(client, "GET", "/ContentMgmt/record/tracks")
+                if res.status_code == 200 and "<" in res.text:
+                    root = ET.fromstring(res.text)
+                    for elem in root.iter():
+                        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+                        if tag == "Track":
+                            child_map = {
+                                (c.tag.split("}")[-1] if "}" in c.tag else c.tag): (c.text.strip() if c.text else "")
+                                for c in elem
+                            }
+                            id_str = child_map.get("id", "")
+                            if not id_str.isdigit():
+                                continue
+                            val = int(id_str)
+                            if val >= 100 and val % 100 != 1:
+                                continue
+                            chan_num = val // 100 if val >= 100 else val
+                            enable_val = (child_map.get("enable") or child_map.get("trackEnable") or "").lower()
+                            if enable_val in ("true", "false"):
+                                entry = channels_status.setdefault(chan_num, {"has_video_signal": None, "is_recording": None, "resolution": None})
+                                entry["is_recording"] = (enable_val == "true")
+            except Exception:
+                pass
+
+        return channels_status
 
     async def reboot(self) -> bool:
         """Reinicia el grabador remotamente vía ISAPI o CGI."""

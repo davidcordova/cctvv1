@@ -29,11 +29,17 @@ import {
   MicOff,
   Copy,
   ShieldAlert,
-  Info
+  Info,
+  Search,
+  Filter,
+  Eye,
+  EyeOff,
+  Square
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import WebRTCPlayer from '../components/WebRTCPlayer';
 import { AudioTalkClient } from '../utils/audioTalkStream';
 
@@ -45,6 +51,8 @@ const CameraCard = ({
   isWebRTCAvailable, 
   isPinned, 
   onPin,
+  staggerIndex = 0,
+  viewportFit = false,
   isReordering,
   orderIndex,
   onMoveLeft,
@@ -63,8 +71,60 @@ const CameraCard = ({
   const [imgError, setImgError] = useState(false);
   const [webrtcError, setWebrtcError] = useState(false);
   const [isRefreshingCard, setIsRefreshingCard] = useState(false);
-
   const [isAudioActive, setIsAudioActive] = useState(false);
+  const [isReadyToStream, setIsReadyToStream] = useState(staggerIndex === 0);
+
+  const [diagnostic, setDiagnostic] = useState(null);
+  const [isDiagnosing, setIsDiagnosing] = useState(false);
+
+  // Montaje escalonado para evitar tormenta de handshakes RTSP simultáneos hacia el DVR
+  useEffect(() => {
+    if (staggerIndex <= 0) {
+      setIsReadyToStream(true);
+      return;
+    }
+    setIsReadyToStream(false);
+    const delayMs = Math.min(staggerIndex, 24) * 85;
+    const timer = setTimeout(() => {
+      setIsReadyToStream(true);
+    }, delayMs);
+    return () => clearTimeout(timer);
+  }, [staggerIndex, camera.id, refreshKey]);
+
+  const fetchDiagnostic = useCallback(async () => {
+    setIsDiagnosing(true);
+    try {
+      const res = await api.get(`/cameras/${camera.id}/diagnostic`);
+      setDiagnostic(res.data);
+    } catch (err) {
+      setDiagnostic({
+        status: 'error',
+        title: 'Error de Diagnóstico',
+        message: err.response?.data?.detail || err.message || 'No se pudo diagnosticar la cámara',
+        action_hint: 'Verificar conexión de red'
+      });
+    } finally {
+      setIsDiagnosing(false);
+    }
+  }, [camera.id]);
+
+  // Escuchar eventos postMessage desde player.html para capturar fallos de stream
+  useEffect(() => {
+    const handleMsg = (event) => {
+      const data = event.data;
+      if (!data || typeof data !== 'object') return;
+      if (data.src === `camera_${camera.id}` || data.src === `camera_${camera.id}_hd`) {
+        if (data.type === 'stream_error') {
+          setWebrtcError(true);
+          fetchDiagnostic();
+        } else if (data.type === 'stream_playing') {
+          setWebrtcError(false);
+        }
+      }
+    };
+    window.addEventListener('message', handleMsg);
+    return () => window.removeEventListener('message', handleMsg);
+  }, [camera.id, fetchDiagnostic]);
 
   // Update snapshot when parent triggers a refresh
   useEffect(() => {
@@ -74,6 +134,13 @@ const CameraCard = ({
     setWebrtcError(false);
   }, [refreshKey, camera.id]);
 
+  // Si la imagen falla en modo snapshot, disparar diagnóstico
+  useEffect(() => {
+    if (imgError && !diagnostic && !isDiagnosing) {
+      fetchDiagnostic();
+    }
+  }, [imgError, diagnostic, isDiagnosing, fetchDiagnostic]);
+
   const handleCardRefresh = (e) => {
     if (e) e.stopPropagation();
     setIsRefreshingCard(true);
@@ -82,6 +149,8 @@ const CameraCard = ({
     setImgLoading(true);
     setImgError(false);
     setWebrtcError(false);
+    setDiagnostic(null);
+    fetchDiagnostic();
     setTimeout(() => setIsRefreshingCard(false), 800);
   };
 
@@ -100,23 +169,35 @@ const CameraCard = ({
           onZoom(camera, snapshotUrl);
         }
       }}
-      className={`relative group bg-zinc-900 rounded-2xl overflow-hidden border transition-all shadow-xl w-full aspect-video flex flex-col select-none ${
+      className={`relative group bg-zinc-900 rounded-xl overflow-hidden border transition-all shadow-xl w-full ${
+        viewportFit ? 'aspect-video lg:aspect-auto lg:h-full' : 'aspect-video'
+      } flex flex-col select-none min-h-0 min-w-0 ${
         isReordering 
           ? 'cursor-grab active:cursor-grabbing border-blue-500/70 hover:border-blue-400 ring-2 ring-blue-500/20' 
           : 'cursor-pointer border-zinc-800 hover:border-blue-500/60'
       } ${isDragOver ? 'ring-4 ring-blue-500 scale-[1.02] border-blue-400 z-20' : ''}`}
     >
-      <div className="w-full h-full relative aspect-video flex items-center justify-center bg-black overflow-hidden">
+      <div className={`w-full h-full relative ${viewportFit ? 'aspect-video lg:aspect-auto' : 'aspect-video'} flex items-center justify-center bg-black overflow-hidden`}>
         {useWebRTC ? (
-          <iframe 
-            key={`wall-stream-${camera.id}-${refreshKey}-${cardLocalKey}-${isAudioActive ? 'audio' : 'mute'}`}
-            src={`/player.html?src=camera_${camera.id}&muted=${isAudioActive ? '0' : '1'}`} 
-            title={camera.name}
-            className="absolute inset-0 w-full h-full border-0 pointer-events-none"
-            scrolling="no"
-            allow="autoplay; fullscreen"
-            onError={() => setWebrtcError(true)}
-          />
+          isReadyToStream ? (
+            <iframe 
+              key={`wall-stream-${camera.id}-${refreshKey}-${cardLocalKey}-${isAudioActive ? 'audio' : 'mute'}`}
+              src={`/player.html?src=camera_${camera.id}&muted=${isAudioActive ? '0' : '1'}&wall=1&mode=mse`} 
+              title={camera.name}
+              className="absolute inset-0 w-full h-full border-0 pointer-events-none"
+              scrolling="no"
+              allow="autoplay; fullscreen"
+              onError={() => {
+                setWebrtcError(true);
+                fetchDiagnostic();
+              }}
+            />
+          ) : (
+            <div className="absolute inset-0 bg-zinc-950 flex flex-col items-center justify-center gap-2 z-10">
+              <div className="w-5 h-5 border-2 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
+              <span className="text-[10px] text-zinc-500 font-mono">Sincronizando CH {camera.channel}...</span>
+            </div>
+          )
         ) : !imgError ? (
           <>
             {imgLoading && (
@@ -128,28 +209,81 @@ const CameraCard = ({
             <img 
               src={snapshotUrl} 
               alt={camera.name}
-              className={`w-full h-full object-cover transition-all duration-300 ${imgLoading ? 'opacity-0' : 'opacity-100 group-hover:scale-105'}`}
+              className={`w-full h-full object-contain bg-black transition-all duration-300 ${imgLoading ? 'opacity-0' : 'opacity-100'}`}
               onLoad={() => setImgLoading(false)}
               onError={() => {
                 setImgLoading(false);
                 setImgError(true);
+                fetchDiagnostic();
               }}
             />
           </>
         ) : (
-          <div className="text-zinc-600 flex flex-col items-center gap-2 p-4 text-center">
-            <div className="w-12 h-12 bg-zinc-900/80 rounded-2xl flex items-center justify-center border border-zinc-800">
-              <CameraIcon size={24} className="opacity-40" />
+          <div className="absolute inset-0 bg-zinc-950 p-4 flex flex-col items-center justify-center text-center gap-2 z-10 select-none">
+            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center border shadow-lg ${
+              diagnostic?.status === 'device_offline' 
+                ? 'bg-rose-950/60 border-rose-600/50 text-rose-400'
+                : diagnostic?.status === 'auth_failed'
+                ? 'bg-amber-950/60 border-amber-600/50 text-amber-400'
+                : diagnostic?.status === 'no_video'
+                ? 'bg-orange-950/60 border-orange-600/50 text-orange-400'
+                : 'bg-zinc-900 border-zinc-800 text-zinc-400'
+            }`}>
+              {diagnostic?.status === 'auth_failed' ? (
+                <ShieldAlert size={20} />
+              ) : diagnostic?.status === 'device_offline' ? (
+                <AlertCircle size={20} />
+              ) : (
+                <CameraIcon size={20} />
+              )}
             </div>
-            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">CANAL SIN SEÑAL / EN ESPERA</span>
-            <span className="text-[9px] text-zinc-600 font-mono">CH {camera.channel}</span>
-            <button
-              type="button"
-              onClick={handleCardRefresh}
-              className="mt-1 px-3 py-1 bg-zinc-800 hover:bg-blue-600 text-zinc-300 hover:text-white rounded-lg text-xs font-semibold transition-all border border-zinc-700 pointer-events-auto"
-            >
-              Reintentar
-            </button>
+
+            <div className="space-y-1 max-w-[270px]">
+              <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md tracking-wider border ${
+                  diagnostic?.status === 'device_offline' 
+                    ? 'bg-rose-900/40 text-rose-300 border-rose-700/50'
+                    : diagnostic?.status === 'auth_failed'
+                    ? 'bg-amber-900/40 text-amber-300 border-amber-700/50'
+                    : diagnostic?.status === 'no_video'
+                    ? 'bg-orange-900/40 text-orange-300 border-orange-700/50'
+                    : 'bg-zinc-800 text-zinc-300 border-zinc-700'
+                }`}>
+                  {diagnostic?.title || 'Canal Sin Señal'}
+                </span>
+                <span className="text-[10px] font-mono text-zinc-500 font-bold">CH {camera.channel}</span>
+              </div>
+              <p className="text-[11px] text-zinc-400 leading-snug line-clamp-2">
+                {diagnostic?.message || 'Esperando conexión con el grabador o cámara IP...'}
+              </p>
+              {diagnostic?.action_hint && (
+                <p className="text-[10px] text-blue-400 font-medium truncate">
+                  💡 {diagnostic.action_hint}
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 mt-1 pointer-events-auto">
+              <button
+                type="button"
+                onClick={handleCardRefresh}
+                className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-600/20 flex items-center gap-1"
+                title="Reconectar y recargar señal"
+              >
+                <RefreshCw size={11} className={isRefreshingCard ? 'animate-spin' : ''} />
+                <span>Reintentar</span>
+              </button>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); fetchDiagnostic(); }}
+                disabled={isDiagnosing}
+                className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white rounded-lg text-xs font-semibold transition-all border border-zinc-700 flex items-center gap-1"
+                title="Ejecutar prueba de diagnóstico"
+              >
+                <Info size={11} className={isDiagnosing ? 'animate-spin' : ''} />
+                <span>{isDiagnosing ? '...' : 'Diagnóstico'}</span>
+              </button>
+            </div>
           </div>
         )}
         
@@ -202,7 +336,7 @@ const CameraCard = ({
             type="button"
             onClick={(e) => { e.stopPropagation(); onPin(camera.id); }}
             className={`absolute top-2.5 right-2.5 p-1.5 rounded-lg bg-black/75 backdrop-blur-md border border-zinc-700/50 text-white transition-all z-30 hover:scale-110 ${
-              isPinned ? 'text-yellow-400 border-yellow-500/50 bg-yellow-500/10' : 'text-zinc-400 hover:text-yellow-300 opacity-0 group-hover:opacity-100'
+              isPinned ? 'text-yellow-400 border-yellow-500/50 bg-yellow-500/10 opacity-100' : 'text-zinc-400 hover:text-yellow-300 opacity-100 sm:opacity-0 sm:group-hover:opacity-100'
             }`}
             title={isPinned ? "Desmarcar foco" : "Marcar como foco principal"}
           >
@@ -211,16 +345,34 @@ const CameraCard = ({
         )}
 
         {/* Camera Name Tag Header */}
-        <div className="absolute top-0 left-0 right-0 p-2.5 bg-gradient-to-b from-black/80 via-black/40 to-transparent opacity-0 group-hover:opacity-100 transition-all duration-300 transform -translate-y-2 group-hover:translate-y-0 z-20 pointer-events-none">
-          <div className="flex justify-between items-center">
-            <span className="text-xs font-bold text-white pr-6 truncate drop-shadow-md">{camera.name}</span>
-            <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]" />
+        <div className="absolute top-0 left-0 right-0 p-2 sm:p-2.5 bg-gradient-to-b from-black/85 via-black/45 to-transparent opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all duration-300 sm:transform sm:-translate-y-2 sm:group-hover:translate-y-0 z-20 pointer-events-none">
+          <div className="flex justify-between items-center gap-2 pr-7">
+            <span className="text-[11px] sm:text-xs font-bold text-white truncate drop-shadow-md">{camera.name}</span>
+            <div className="flex items-center gap-1.5 pointer-events-auto shrink-0">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fetchDiagnostic();
+                }}
+                className="p-1 rounded bg-black/70 hover:bg-blue-600 text-zinc-300 hover:text-white transition-all text-[10px] flex items-center gap-1 border border-zinc-700/60 shadow cursor-pointer"
+                title="Diagnóstico de salud de esta cámara"
+              >
+                <Info size={11} />
+                <span className="hidden md:inline">Diagnóstico</span>
+              </button>
+              <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                webrtcError || imgError || (diagnostic && !diagnostic.is_online)
+                  ? 'bg-rose-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]' 
+                  : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)]'
+              }`} />
+            </div>
           </div>
         </div>
 
         {/* Camera Footer */}
         {!isReordering && (
-          <div className="absolute bottom-0 left-0 right-0 p-2.5 bg-gradient-to-t from-black/80 via-black/40 to-transparent flex justify-between items-end opacity-0 group-hover:opacity-100 transition-all duration-300 transform translate-y-2 group-hover:translate-y-0 z-20 pointer-events-none">
+          <div className="absolute bottom-0 left-0 right-0 p-2 sm:p-2.5 bg-gradient-to-t from-black/85 via-black/45 to-transparent flex justify-between items-end opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all duration-300 sm:transform sm:translate-y-2 sm:group-hover:translate-y-0 z-20 pointer-events-none">
             <span className="text-[10px] text-zinc-300 font-mono font-bold bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded border border-zinc-700/60">CH {camera.channel}</span>
             <div className="flex gap-1.5 pointer-events-auto items-center">
               <button 
@@ -229,7 +381,7 @@ const CameraCard = ({
                   e.stopPropagation();
                   setIsAudioActive(prev => !prev);
                 }}
-                className={`p-1 rounded transition-all hover:scale-110 active:scale-95 ${
+                className={`p-1.5 sm:p-1 rounded transition-all hover:scale-110 active:scale-95 ${
                   isAudioActive 
                     ? 'bg-amber-500 text-black font-bold shadow-lg shadow-amber-500/30' 
                     : 'bg-black/60 hover:bg-zinc-700 text-zinc-300 hover:text-white'
@@ -241,7 +393,7 @@ const CameraCard = ({
               <button 
                 type="button"
                 onClick={handleCardRefresh}
-                className="p-1 rounded bg-black/60 hover:bg-blue-600 text-white transition-all hover:scale-110 active:scale-95"
+                className="p-1.5 sm:p-1 rounded bg-black/60 hover:bg-blue-600 text-white transition-all hover:scale-110 active:scale-95"
                 title="Reconectar señal de esta cámara"
               >
                 <RefreshCw size={13} className={isRefreshingCard ? 'animate-spin' : ''} />
@@ -249,7 +401,7 @@ const CameraCard = ({
               <button 
                 type="button"
                 onClick={(e) => { e.stopPropagation(); onZoom(camera, snapshotUrl); }}
-                className="p-1 rounded bg-black/60 hover:bg-blue-600 text-white transition-all hover:scale-110"
+                className="p-1.5 sm:p-1 rounded bg-black/60 hover:bg-blue-600 text-white transition-all hover:scale-110"
                 title="Ampliar vista"
               >
                 <Maximize2 size={13} />
@@ -267,6 +419,7 @@ const INTERVAL_OPTIONS = [7, 10, 20, 30, 60, 120];
 
 const CameraWall = () => {
   const { user } = useAuth();
+  const toast = useToast();
   const orderStorageKey = user?.id ? `cctv_wall_order_u${user.id}` : 'cctv_wall_order_guest';
 
   const [layout, setLayout] = useState('auto');
@@ -274,6 +427,9 @@ const CameraWall = () => {
   const [pinnedCameraId, setPinnedCameraId] = useState(null);
   const [activePatrolIndex, setActivePatrolIndex] = useState(0);
   const [isWallFullscreen, setIsWallFullscreen] = useState(false);
+  const [isCinemaMode, setIsCinemaMode] = useState(false);
+  const [selectedDeviceFilter, setSelectedDeviceFilter] = useState('all');
+  const [searchQuery, setSearchQuery] = useState('');
   const [zoomedCamera, setZoomedCamera] = useState(null);
   const [modalStreamKey, setModalStreamKey] = useState(0);
   const [modalMode, setModalMode] = useState('live');
@@ -357,7 +513,7 @@ const CameraWall = () => {
         setMicErrorMsg('Permiso de micrófono denegado por el navegador.');
         setMicHelpModal(true);
       } else {
-        alert(`No se pudo activar el micrófono: ${err.message || err.name}`);
+        toast.error(`No se pudo activar el micrófono: ${err.message || err.name}`);
       }
     }
   };
@@ -468,13 +624,13 @@ const CameraWall = () => {
     return brand.includes('ezviz') || type === 'ipc' || model.includes('ipc') || model.includes('h8c') || model.includes('h6c') || model.includes('h3c');
   }, [zoomedCamera, getCameraDevice]);
 
-  // Filtrar cámaras activas
+  // Filtrar cámaras activas e instaladas (excluye puertos físicos vacíos / en reserva)
   const baseActiveCameras = useMemo(() => {
-    return cameras.filter(c => c.is_active);
+    return cameras.filter(c => c.is_active && c.is_installed !== false);
   }, [cameras]);
 
   // Ordenar cámaras según el orden personalizado del usuario
-  const activeCameras = useMemo(() => {
+  const orderedActiveCameras = useMemo(() => {
     if (!customOrder || customOrder.length === 0) {
       return baseActiveCameras;
     }
@@ -487,6 +643,29 @@ const CameraWall = () => {
       return posA - posB;
     });
   }, [baseActiveCameras, customOrder]);
+
+  // Aplicar filtros rápidos de barra superior (Grabador / Búsqueda por nombre)
+  const activeCameras = useMemo(() => {
+    let list = orderedActiveCameras;
+    if (selectedDeviceFilter !== 'all') {
+      const devIdNum = parseInt(selectedDeviceFilter, 10);
+      list = list.filter(c => c.device_id === devIdNum);
+    }
+    const term = searchQuery.trim().toLowerCase();
+    if (term) {
+      list = list.filter(c =>
+        (c.name && c.name.toLowerCase().includes(term)) ||
+        String(c.channel) === term
+      );
+    }
+    return list;
+  }, [orderedActiveCameras, selectedDeviceFilter, searchQuery]);
+
+  useEffect(() => {
+    if (selectedDeviceFilter !== 'all' || searchQuery.trim()) {
+      setIsReordering(false);
+    }
+  }, [selectedDeviceFilter, searchQuery]);
 
   // Atajos de teclado para navegación y cierre en vista maximizada (Zoom)
   useEffect(() => {
@@ -592,21 +771,23 @@ const CameraWall = () => {
 
   // Calculate items per page based on selected layout
   const getPageSize = () => {
+    if (layout === 'cols-1') return 1;
     if (layout === 'cols-2') return 4;
     if (layout === 'cols-3') return 9;
     if (layout === 'cols-4') return 16;
+    if (layout === 'cols-5') return 25;
     if (layout === 'focus') return 6;
     if (layout === 'custom') return customColumns * 3;
-    return 12; // auto
+    return 12; // auto (4x3)
   };
 
   const pageSize = getPageSize();
   const totalPages = Math.ceil(activeCameras.length / pageSize) || 1;
 
-  // Reset to Page 1 when layout or customColumns changes
+  // Reset to Page 1 when layout, customColumns o filtros cambian
   useEffect(() => {
     setCurrentPage(1);
-  }, [layout, customColumns]);
+  }, [layout, customColumns, selectedDeviceFilter, searchQuery]);
 
   // Ensure currentPage stays within valid bounds
   useEffect(() => {
@@ -752,219 +933,302 @@ const CameraWall = () => {
   const startIndex = (currentPage - 1) * pageSize;
   const paginatedCameras = activeCameras.slice(startIndex, startIndex + pageSize);
 
+  const getDesktopGridClass = () => {
+    if (layout === 'cols-1') return 'grid-cols-1 lg:grid-cols-1 lg:grid-rows-1';
+    if (layout === 'cols-2') return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 lg:grid-rows-2';
+    if (layout === 'cols-3') return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 lg:grid-rows-3';
+    if (layout === 'cols-4') return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 lg:grid-rows-4';
+    if (layout === 'cols-5') return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 lg:grid-rows-5';
+    if (layout === 'auto') {
+      const count = totalPages === 1 ? paginatedCameras.length : 12;
+      if (count <= 1) return 'grid-cols-1 lg:grid-cols-1 lg:grid-rows-1';
+      if (count <= 4) return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 lg:grid-rows-2';
+      if (count <= 6) return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 lg:grid-rows-2';
+      if (count <= 9) return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 lg:grid-rows-3';
+      return 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 lg:grid-rows-3';
+    }
+    return 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 lg:grid-rows-3';
+  };
+
   return (
-    <div className="flex-1 flex flex-col h-full bg-zinc-950 overflow-hidden">
+    <div className="flex-1 flex flex-col h-full min-h-0 bg-zinc-950 overflow-hidden relative">
+      {/* Botón flotante para restaurar barra en Modo Cine */}
+      {isCinemaMode && (
+        <button
+          type="button"
+          onClick={() => setIsCinemaMode(false)}
+          className="fixed top-3 right-3 z-40 bg-zinc-900/85 hover:bg-blue-600 text-zinc-200 hover:text-white px-3 py-1.5 rounded-full text-xs font-semibold border border-zinc-700/70 backdrop-blur-md shadow-xl flex items-center gap-1.5 transition-all opacity-60 hover:opacity-100 cursor-pointer"
+          title="Mostrar barra de controles del muro"
+        >
+          <Eye size={14} />
+          <span>Mostrar Controles</span>
+        </button>
+      )}
+
       {/* Top Controls Toolbar */}
-      <header className="p-3 md:px-6 border-b border-zinc-800 bg-zinc-900/50 flex flex-wrap justify-between items-center gap-3 z-30">
-        <div className="flex flex-wrap items-center gap-2 sm:gap-4">
-          <div className="flex items-center gap-2">
-            <h1 className="text-lg font-bold text-white tracking-tight">Muro de Cámaras</h1>
-            <span className="text-xs bg-zinc-800 text-zinc-400 font-mono px-2 py-0.5 rounded-full border border-zinc-700">
-              {activeCameras.length} Canales
-            </span>
-          </div>
+      {!isCinemaMode && (
+        <header className="px-3 py-2.5 md:px-5 border-b border-zinc-800 bg-zinc-900/60 backdrop-blur-md flex flex-wrap justify-between items-center gap-2.5 z-30 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <div className="flex items-center gap-2">
+              <h1 className="text-base sm:text-lg font-bold text-white tracking-tight">Muro de Cámaras</h1>
+              <span className="text-[11px] bg-zinc-800 text-zinc-300 font-mono px-2 py-0.5 rounded-full border border-zinc-700">
+                {activeCameras.length} Canales
+              </span>
+            </div>
 
-          {/* Layout Switcher */}
-          <div className="flex bg-zinc-950 p-1 rounded-xl border border-zinc-800 items-center">
-            <button
-              onClick={() => setLayout('auto')}
-              className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'auto' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
-              title="Cuadrícula Automática"
-            >
-              <LayoutGrid size={16} />
-            </button>
-            <button
-              onClick={() => setLayout('cols-2')}
-              className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'cols-2' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
-              title="Cuadrícula 2x2 (4 cámaras grandes)"
-            >
-              <Grid2X2 size={16} />
-            </button>
-            <button
-              onClick={() => setLayout('cols-3')}
-              className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'cols-3' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
-              title="Cuadrícula 3x3 (9 cámaras)"
-            >
-              <Grid3X3 size={16} />
-            </button>
-            <button
-              onClick={() => setLayout('cols-4')}
-              className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'cols-4' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
-              title="Cuadrícula 4x4 (16 cámaras)"
-            >
-              <Layers size={16} />
-            </button>
-            <button
-              onClick={() => setLayout('focus')}
-              className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'focus' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
-              title="Vista de Foco: 1 Principal + Cámaras Secundarias"
-            >
-              <Star size={16} />
-            </button>
-            <button
-              onClick={() => setLayout('patrol')}
-              className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'patrol' ? 'bg-emerald-600 text-white shadow animate-pulse' : 'text-zinc-400 hover:text-white'}`}
-              title="Modo Ronda / Patrullaje Secuencial"
-            >
-              <Play size={16} />
-            </button>
-          </div>
-
-          {/* Botón de Reordenamiento Interactivo de Cámaras (Drag & Drop) */}
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => setIsReordering(!isReordering)}
-              className={`px-3 py-1.5 rounded-xl font-semibold text-xs transition-all flex items-center gap-1.5 border cursor-pointer active:scale-95 ${
-                isReordering 
-                  ? 'bg-blue-600 text-white border-blue-500 shadow-lg shadow-blue-600/30 ring-2 ring-blue-400/40' 
-                  : customOrder.length > 0
-                  ? 'bg-blue-950/40 text-blue-400 border-blue-800/60 hover:bg-blue-900/50'
-                  : 'bg-zinc-900 text-zinc-300 border-zinc-800 hover:bg-zinc-800 hover:text-white'
-              }`}
-              title="Personalizar el orden en que se muestran las cámaras"
-            >
-              {isReordering ? <Check size={14} /> : <Move size={14} />}
-              <span>{isReordering ? 'Listo / Guardar' : customOrder.length > 0 ? 'Orden Personalizado' : 'Reordenar Muro'}</span>
-            </button>
-
-            {customOrder.length > 0 && !isReordering && (
+            {/* Layout Switcher */}
+            <div className="flex bg-zinc-950 p-1 rounded-xl border border-zinc-800 items-center">
               <button
-                onClick={handleResetOrder}
-                className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-800 transition-colors cursor-pointer"
-                title="Restablecer al orden por defecto (por DVR y canal)"
+                onClick={() => setLayout('auto')}
+                className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'auto' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
+                title="Cuadrícula Adaptativa (4x3)"
               >
-                <RotateCcw size={13} />
+                <LayoutGrid size={15} />
               </button>
+              <button
+                onClick={() => setLayout('cols-1')}
+                className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'cols-1' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
+                title="1x1 (Cámara Única)"
+              >
+                <Square size={15} />
+              </button>
+              <button
+                onClick={() => setLayout('cols-2')}
+                className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'cols-2' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
+                title="Cuadrícula 2x2 (4 cámaras)"
+              >
+                <Grid2X2 size={15} />
+              </button>
+              <button
+                onClick={() => setLayout('cols-3')}
+                className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'cols-3' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
+                title="Cuadrícula 3x3 (9 cámaras)"
+              >
+                <Grid3X3 size={15} />
+              </button>
+              <button
+                onClick={() => setLayout('cols-4')}
+                className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'cols-4' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
+                title="Cuadrícula 4x4 (16 cámaras)"
+              >
+                <Layers size={15} />
+              </button>
+              <button
+                onClick={() => setLayout('cols-5')}
+                className={`px-1.5 py-1 rounded-lg transition-all cursor-pointer text-[11px] font-black font-mono ${layout === 'cols-5' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
+                title="Cuadrícula 5x5 (25 cámaras para monitores FHD/2K/4K)"
+              >
+                5x5
+              </button>
+              <button
+                onClick={() => setLayout('focus')}
+                className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'focus' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'}`}
+                title="Vista de Foco: 1 Principal + Cámaras Secundarias"
+              >
+                <Star size={15} />
+              </button>
+              <button
+                onClick={() => setLayout('patrol')}
+                className={`p-1.5 rounded-lg transition-all cursor-pointer ${layout === 'patrol' ? 'bg-emerald-600 text-white shadow animate-pulse' : 'text-zinc-400 hover:text-white'}`}
+                title="Modo Ronda / Patrullaje Secuencial"
+              >
+                <Play size={15} />
+              </button>
+            </div>
+
+            {/* Filtro rápido por Grabador y Búsqueda */}
+            <div className="hidden md:flex items-center gap-1.5 bg-zinc-950 p-1 rounded-xl border border-zinc-800 text-xs">
+              <Filter size={13} className="text-zinc-500 ml-1.5 shrink-0" />
+              <select
+                value={selectedDeviceFilter}
+                onChange={(e) => setSelectedDeviceFilter(e.target.value)}
+                className="bg-transparent text-zinc-200 border-none outline-none font-medium pr-1 cursor-pointer max-w-[155px] truncate"
+                title="Filtrar por Grabador o Cámara IP"
+              >
+                <option value="all" className="bg-zinc-900 text-zinc-200">Todos los Equipos</option>
+                {devices.map(d => (
+                  <option key={d.id} value={String(d.id)} className="bg-zinc-900 text-zinc-200">
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+              <span className="text-zinc-800">|</span>
+              <div className="flex items-center gap-1 px-1.5">
+                <Search size={13} className="text-zinc-500 shrink-0" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Buscar cámara..."
+                  className="bg-transparent text-zinc-200 placeholder-zinc-600 outline-none w-28 focus:w-36 transition-all text-xs"
+                />
+              </div>
+            </div>
+
+            {/* Botón de Reordenamiento Interactivo de Cámaras (Drag & Drop) */}
+            <div className="flex items-center gap-1.5">
+              <button
+                disabled={selectedDeviceFilter !== 'all' || Boolean(searchQuery.trim())}
+                onClick={() => setIsReordering(!isReordering)}
+                className={`px-2.5 py-1.5 rounded-xl font-semibold text-xs transition-all flex items-center gap-1.5 border cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
+                  isReordering 
+                    ? 'bg-blue-600 text-white border-blue-500 shadow-lg shadow-blue-600/30 ring-2 ring-blue-400/40' 
+                    : customOrder.length > 0
+                    ? 'bg-blue-950/40 text-blue-400 border-blue-800/60 hover:bg-blue-900/50'
+                    : 'bg-zinc-900 text-zinc-300 border-zinc-800 hover:bg-zinc-800 hover:text-white'
+                }`}
+                title="Personalizar el orden en que se muestran las cámaras"
+              >
+                {isReordering ? <Check size={14} /> : <Move size={14} />}
+                <span className="hidden xl:inline">{isReordering ? 'Listo' : customOrder.length > 0 ? 'Personalizado' : 'Reordenar'}</span>
+              </button>
+
+              {customOrder.length > 0 && !isReordering && (
+                <button
+                  onClick={handleResetOrder}
+                  className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white border border-zinc-800 transition-colors cursor-pointer"
+                  title="Restablecer al orden por defecto (por DVR y canal)"
+                >
+                  <RotateCcw size={13} />
+                </button>
+              )}
+            </div>
+
+            {/* Quick Page Indicator in Toolbar */}
+            {totalPages > 1 && layout !== 'patrol' && (
+              <div className="flex items-center gap-1 bg-zinc-950 px-2 py-1 rounded-xl border border-zinc-800 text-xs">
+                <button 
+                  onClick={() => setCurrentPage(prev => (prev > 1 ? prev - 1 : totalPages))}
+                  className="p-0.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-all active:scale-95 cursor-pointer"
+                  title="Página Anterior (Flecha Izquierda)"
+                >
+                  <ChevronLeft size={15} />
+                </button>
+                <span className="font-mono text-zinc-300 font-semibold px-1 select-none">
+                  <span className="text-blue-400 font-bold">{currentPage}</span>/{totalPages}
+                </span>
+                <button 
+                  onClick={() => setCurrentPage(prev => (prev < totalPages ? prev + 1 : 1))}
+                  className="p-0.5 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-all active:scale-95 cursor-pointer"
+                  title="Página Siguiente (Flecha Derecha)"
+                >
+                  <ChevronRight size={15} />
+                </button>
+              </div>
             )}
           </div>
 
-          {/* Quick Page Indicator in Toolbar */}
-          {totalPages > 1 && layout !== 'patrol' && (
-            <div className="flex items-center gap-1 bg-zinc-950 px-2.5 py-1 rounded-xl border border-zinc-800 text-xs">
-              <button 
-                onClick={() => setCurrentPage(prev => (prev > 1 ? prev - 1 : totalPages))}
-                className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-all active:scale-95 cursor-pointer"
-                title="Página Anterior (Flecha Izquierda)"
+          <div className="flex items-center gap-2">
+            {/* Stream Mode Switcher */}
+            <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800 items-center text-xs font-semibold">
+              <button
+                onClick={() => setStreamMode('snapshot')}
+                className={`flex items-center gap-1.5 px-2 py-1 rounded-md transition-all cursor-pointer ${
+                  streamMode === 'snapshot' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'
+                }`}
+                title="Modo Instantáneas: Máxima estabilidad y bajo consumo"
               >
-                <ChevronLeft size={16} />
+                <ImageIcon size={13} />
+                <span className="hidden sm:inline">Fotos</span>
               </button>
-              <span className="font-mono text-zinc-300 font-semibold px-1 select-none">
-                Pág <span className="text-blue-400 font-bold">{currentPage}</span> / {totalPages}
-              </span>
-              <button 
-                onClick={() => setCurrentPage(prev => (prev < totalPages ? prev + 1 : 1))}
-                className="p-1 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-all active:scale-95 cursor-pointer"
-                title="Página Siguiente (Flecha Derecha)"
+              <button
+                onClick={() => setStreamMode('webrtc')}
+                disabled={!isWebRTCAvailable}
+                className={`flex items-center gap-1.5 px-2 py-1 rounded-md transition-all cursor-pointer ${
+                  streamMode === 'webrtc' 
+                    ? 'bg-emerald-600 text-white shadow' 
+                    : isWebRTCAvailable 
+                    ? 'text-zinc-400 hover:text-white' 
+                    : 'text-zinc-600 cursor-not-allowed opacity-50'
+                }`}
+                title={isWebRTCAvailable ? "Transmisión en Vivo continua de baja latencia" : "Streaming en vivo no disponible"}
               >
-                <ChevronRight size={16} />
+                <Radio size={13} />
+                <span className="hidden sm:inline">En Vivo</span>
               </button>
             </div>
-          )}
-        </div>
 
-        <div className="flex items-center gap-3">
-          {/* Stream Mode Switcher */}
-          <div className="flex bg-zinc-950 p-1 rounded-lg border border-zinc-800 items-center text-xs font-semibold">
-            <button
-              onClick={() => setStreamMode('snapshot')}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-all cursor-pointer ${
-                streamMode === 'snapshot' ? 'bg-blue-600 text-white shadow' : 'text-zinc-400 hover:text-white'
-              }`}
-              title="Modo Instantáneas: Máxima estabilidad y bajo consumo"
+            {/* Selector de intervalo para Snapshots */}
+            {streamMode === 'snapshot' && (
+              <div className="flex items-center gap-1 bg-zinc-950 px-2 py-1 rounded-lg border border-zinc-800 text-xs">
+                <Clock size={12} className="text-zinc-500" />
+                <select 
+                  value={autoRefreshSec}
+                  onChange={(e) => handleAutoRefreshChange(e.target.value)}
+                  className="bg-transparent text-blue-400 border-none outline-none font-bold cursor-pointer"
+                  title="Intervalo de actualización de instantáneas"
+                >
+                  <option value={3} className="bg-zinc-900 text-zinc-200">3s</option>
+                  <option value={5} className="bg-zinc-900 text-zinc-200">5s</option>
+                  {INTERVAL_OPTIONS.map(sec => (
+                    <option key={`snap-sec-${sec}`} value={sec} className="bg-zinc-900 text-zinc-200">
+                      {sec}s
+                    </option>
+                  ))}
+                  <option value={0} className="bg-zinc-900 text-zinc-200">Manual</option>
+                </select>
+              </div>
+            )}
+
+            {/* Controles rápidos de Ronda en la barra superior cuando está activo */}
+            {layout === 'patrol' && (
+              <div className="flex items-center gap-1.5 bg-zinc-950 px-2 py-1 rounded-xl border border-emerald-800/60 text-xs shadow-md shadow-emerald-950/30">
+                <button
+                  type="button"
+                  onClick={() => setIsPatrolPaused(prev => !prev)}
+                  className={`p-1 rounded-lg transition-all cursor-pointer ${
+                    isPatrolPaused ? 'bg-amber-500 text-black font-bold' : 'hover:bg-zinc-800 text-emerald-400'
+                  }`}
+                  title={isPatrolPaused ? "Reanudar ronda" : "Pausar ronda"}
+                >
+                  {isPatrolPaused ? <Play size={13} /> : <Pause size={13} />}
+                </button>
+                <div className="flex items-center gap-1 font-mono text-[11px] text-zinc-300">
+                  <Clock size={12} className="text-zinc-500" />
+                  <span>{isPatrolPaused ? 'Pausa' : `${patrolCountdown}s`}</span>
+                </div>
+                <span className="text-zinc-700">|</span>
+                <select
+                  value={patrolIntervalSec}
+                  onChange={(e) => handlePatrolIntervalChange(e.target.value)}
+                  className="bg-transparent text-emerald-400 font-bold border-none outline-none cursor-pointer text-xs"
+                  title="Tiempo de rotación de la ronda"
+                >
+                  {INTERVAL_OPTIONS.map(sec => (
+                    <option key={`patrol-top-sec-${sec}`} value={sec} className="bg-zinc-900 text-zinc-200">
+                      {sec}s
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <button 
+              onClick={triggerManualRefresh}
+              className={`bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white p-2 rounded-lg font-medium transition-all text-xs border border-zinc-700 shadow active:scale-95 flex items-center gap-1.5 cursor-pointer ${isRefetching ? 'border-blue-500/50' : ''}`}
+              title="Reconectar y actualizar todas las cámaras del muro"
             >
-              <ImageIcon size={14} />
-              <span>Snapshots</span>
+              <RefreshCw size={14} className={isRefetching ? 'animate-spin text-blue-400' : ''} />
+              <span className="hidden 2xl:inline">Reconectar</span>
             </button>
             <button
-              onClick={() => setStreamMode('webrtc')}
-              disabled={!isWebRTCAvailable}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-all cursor-pointer ${
-                streamMode === 'webrtc' 
-                  ? 'bg-emerald-600 text-white shadow' 
-                  : isWebRTCAvailable 
-                  ? 'text-zinc-400 hover:text-white' 
-                  : 'text-zinc-600 cursor-not-allowed opacity-50'
-              }`}
-              title={isWebRTCAvailable ? "Modo WebRTC: Transmisión fluida a 30 FPS" : "WebRTC no disponible"}
+              onClick={() => setIsCinemaMode(true)}
+              className="hidden lg:flex bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white p-2 rounded-lg font-medium transition-all text-xs border border-zinc-700 shadow active:scale-95 items-center gap-1.5 cursor-pointer"
+              title="Modo Cine: Ocultar barra superior para maximizar video"
             >
-              <Radio size={14} />
-              <span>WebRTC en Vivo</span>
+              <EyeOff size={14} />
+            </button>
+            <button 
+              onClick={toggleFullScreen}
+              className="bg-zinc-800 hover:bg-zinc-700 text-white px-2.5 py-2 rounded-lg font-medium transition-all text-xs border border-zinc-700 shadow active:scale-95 flex items-center gap-1.5 cursor-pointer"
+              title="Pantalla Completa (F11)"
+            >
+              <Maximize2 size={14} />
+              <span className="hidden xl:inline">Pantalla Completa</span>
             </button>
           </div>
-
-          {/* Selector de intervalo para Snapshots */}
-          {streamMode === 'snapshot' && (
-            <div className="flex items-center gap-1.5 bg-zinc-950 px-2.5 py-1.5 rounded-lg border border-zinc-800 text-xs">
-              <Clock size={13} className="text-zinc-500" />
-              <span className="text-zinc-500 font-medium">Refresco:</span>
-              <select 
-                value={autoRefreshSec}
-                onChange={(e) => handleAutoRefreshChange(e.target.value)}
-                className="bg-transparent text-blue-400 border-none outline-none font-bold cursor-pointer"
-                title="Intervalo de actualización de instantáneas"
-              >
-                <option value={3} className="bg-zinc-900 text-zinc-200">3s</option>
-                <option value={5} className="bg-zinc-900 text-zinc-200">5s</option>
-                {INTERVAL_OPTIONS.map(sec => (
-                  <option key={`snap-sec-${sec}`} value={sec} className="bg-zinc-900 text-zinc-200">
-                    {sec}s
-                  </option>
-                ))}
-                <option value={0} className="bg-zinc-900 text-zinc-200">Manual (Off)</option>
-              </select>
-            </div>
-          )}
-
-          {/* Controles rápidos de Ronda en la barra superior cuando está activo */}
-          {layout === 'patrol' && (
-            <div className="flex items-center gap-1.5 bg-zinc-950 px-2.5 py-1 rounded-xl border border-emerald-800/60 text-xs shadow-md shadow-emerald-950/30">
-              <button
-                type="button"
-                onClick={() => setIsPatrolPaused(prev => !prev)}
-                className={`p-1 rounded-lg transition-all cursor-pointer ${
-                  isPatrolPaused ? 'bg-amber-500 text-black font-bold' : 'hover:bg-zinc-800 text-emerald-400'
-                }`}
-                title={isPatrolPaused ? "Reanudar ronda" : "Pausar ronda"}
-              >
-                {isPatrolPaused ? <Play size={13} /> : <Pause size={13} />}
-              </button>
-              <div className="flex items-center gap-1 font-mono text-[11px] text-zinc-300">
-                <Clock size={12} className="text-zinc-500" />
-                <span>{isPatrolPaused ? 'Pausa' : `${patrolCountdown}s`}</span>
-              </div>
-              <span className="text-zinc-700">|</span>
-              <select
-                value={patrolIntervalSec}
-                onChange={(e) => handlePatrolIntervalChange(e.target.value)}
-                className="bg-transparent text-emerald-400 font-bold border-none outline-none cursor-pointer text-xs"
-                title="Tiempo de rotación de la ronda"
-              >
-                {INTERVAL_OPTIONS.map(sec => (
-                  <option key={`patrol-top-sec-${sec}`} value={sec} className="bg-zinc-900 text-zinc-200">
-                    {sec}s
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          <button 
-            onClick={triggerManualRefresh}
-            className={`bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white px-3 py-2 rounded-lg font-medium transition-all text-xs border border-zinc-700 shadow active:scale-95 flex items-center gap-1.5 cursor-pointer ${isRefetching ? 'border-blue-500/50' : ''}`}
-            title="Reconectar y actualizar todas las cámaras del muro"
-          >
-            <RefreshCw size={14} className={isRefetching ? 'animate-spin text-blue-400' : ''} />
-            <span className="hidden sm:inline">Reconectar Todo</span>
-          </button>
-          <button 
-            onClick={toggleFullScreen}
-            className="bg-zinc-800 hover:bg-zinc-700 text-white px-3.5 py-2 rounded-lg font-medium transition-all text-xs border border-zinc-700 shadow active:scale-95 flex items-center gap-1.5 cursor-pointer"
-          >
-            <Maximize2 size={14} />
-            Pantalla Completa
-          </button>
-        </div>
-      </header>
+        </header>
+      )}
 
       {/* Banner Informativo cuando está activo el Modo de Reordenamiento */}
       {isReordering && (
@@ -1038,26 +1302,26 @@ const CameraWall = () => {
                 )}
 
                 {/* Floating Top Badge with Camera Name */}
-                <div className="absolute top-6 left-6 z-30 bg-black/80 backdrop-blur-md px-4 py-2 rounded-xl border border-zinc-800/80 shadow-2xl flex items-center gap-3 select-none">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
-                  <div>
-                    <h3 className="text-sm font-bold text-white leading-tight">{activeCameras[activePatrolIndex].name}</h3>
-                    <p className="text-[10px] text-zinc-400 font-mono">
+                <div className="absolute top-3 left-3 sm:top-6 sm:left-6 right-3 sm:right-auto z-30 bg-black/80 backdrop-blur-md px-3.5 py-2 rounded-xl border border-zinc-800/80 shadow-2xl flex items-center gap-3 select-none max-w-full sm:max-w-md">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)] shrink-0" />
+                  <div className="min-w-0">
+                    <h3 className="text-xs sm:text-sm font-bold text-white leading-tight truncate">{activeCameras[activePatrolIndex].name}</h3>
+                    <p className="text-[10px] text-zinc-400 font-mono truncate">
                       Canal {activeCameras[activePatrolIndex].channel} • {streamMode === 'webrtc' ? 'WebRTC en Vivo (30 FPS)' : 'Snapshot HD'}
                     </p>
                   </div>
                 </div>
 
                 {/* Floating Bottom Patrol Controls con Selector de Tiempo y Progreso */}
-                <div className="absolute bottom-6 left-6 z-30 bg-black/90 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-emerald-900/60 text-xs font-semibold text-zinc-200 shadow-2xl flex flex-col gap-2 select-none overflow-hidden ring-1 ring-emerald-500/20">
-                  <div className="flex items-center gap-3.5">
+                <div className="absolute bottom-3 sm:bottom-6 inset-x-3 sm:inset-x-auto sm:left-6 z-30 bg-black/90 backdrop-blur-md px-3.5 sm:px-4 py-2.5 rounded-2xl border border-emerald-900/60 text-xs font-semibold text-zinc-200 shadow-2xl flex flex-col gap-2 select-none overflow-hidden ring-1 ring-emerald-500/20">
+                  <div className="flex flex-wrap items-center justify-between sm:justify-start gap-2 sm:gap-3.5">
                     <div className="flex items-center gap-2">
-                      <span className={`w-2.5 h-2.5 rounded-full ${isPatrolPaused ? 'bg-amber-400' : 'bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]'}`} />
-                      <span className="text-emerald-400 font-bold">
-                        Ronda Activa ({activePatrolIndex + 1} / {activeCameras.length})
+                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${isPatrolPaused ? 'bg-amber-400' : 'bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.8)]'}`} />
+                      <span className="text-emerald-400 font-bold text-[11px] sm:text-xs">
+                        Ronda ({activePatrolIndex + 1}/{activeCameras.length})
                       </span>
                     </div>
-                    <span className="text-zinc-700">|</span>
+                    <span className="text-zinc-700 hidden sm:inline">|</span>
                     
                     <button
                       type="button"
@@ -1140,7 +1404,7 @@ const CameraWall = () => {
             )}
           </div>
         ) : layout === 'focus' ? (
-          /* Focus Mode - Professional 3x3 CCTV Surround Grid & 1+N Side Stack */
+          /* Focus Mode - Professional 16:9 CCTV Surround Grid & Responsive 1+N Stack */
           (() => {
             const focusCam = activeCameras.find(c => c.id === pinnedCameraId) || activeCameras[0];
             const otherCams = activeCameras.filter(c => c.id !== focusCam.id);
@@ -1149,16 +1413,13 @@ const CameraWall = () => {
             if (totalOthers <= 3) {
               return (
                 <div 
-                  className="flex-1 w-full h-full p-2.5 md:p-3 grid gap-3 overflow-hidden relative select-none"
-                  style={{
-                    gridTemplateColumns: totalOthers === 0 
-                      ? '1fr' 
-                      : 'minmax(0, 1fr) minmax(260px, 28vw)'
-                  }}
+                  className={`flex-1 w-full h-full p-2.5 md:p-4 grid gap-3 overflow-y-auto lg:overflow-hidden relative select-none ${
+                    totalOthers === 0 ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-[minmax(0,1fr)_minmax(260px,28vw)]'
+                  }`}
                 >
                   {/* Main Large Focus Camera */}
-                  <div className="w-full h-full min-h-0 flex flex-col justify-center items-center overflow-hidden">
-                    <div className="w-full h-full max-h-full aspect-video flex items-center justify-center">
+                  <div className="w-full lg:h-full min-h-0 flex flex-col justify-center items-center overflow-hidden">
+                    <div className="w-full max-h-full aspect-video flex items-center justify-center">
                       <CameraCard 
                         camera={focusCam} 
                         onZoom={handleZoom} 
@@ -1171,11 +1432,11 @@ const CameraWall = () => {
                     </div>
                   </div>
 
-                  {/* Secondary Cameras (1 to 3 stacked filling full height) */}
+                  {/* Secondary Cameras (1 to 3 stacked on desktop, 1-2 cols on mobile/tablet) */}
                   {totalOthers > 0 && (
-                    <div className="w-full h-full min-h-0 flex flex-col gap-2.5 justify-between overflow-hidden">
+                    <div className="w-full lg:h-full min-h-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-2.5 content-center overflow-hidden">
                       {otherCams.map((cam, idx) => (
-                        <div key={cam.id} className="w-full flex-1 min-h-0 flex items-center justify-center">
+                        <div key={cam.id} className="w-full aspect-video flex items-center justify-center">
                           <CameraCard 
                             camera={cam} 
                             onZoom={handleZoom} 
@@ -1209,18 +1470,18 @@ const CameraWall = () => {
               const pageOthers = otherCams.slice(focusStartIndex, focusStartIndex + pageSize);
 
               const slotClasses = [
-                'col-start-3 row-start-1',
-                'col-start-3 row-start-2',
-                'col-start-1 row-start-3',
-                'col-start-2 row-start-3',
-                'col-start-3 row-start-3',
+                'lg:col-start-3 lg:row-start-1',
+                'lg:col-start-3 lg:row-start-2',
+                'lg:col-start-1 lg:row-start-3',
+                'lg:col-start-2 lg:row-start-3',
+                'lg:col-start-3 lg:row-start-3',
               ];
 
               return (
-                <div className="flex-1 w-full h-full p-2.5 md:p-3 relative overflow-hidden flex flex-col justify-between select-none">
-                  <div className="flex-1 w-full h-full grid grid-cols-3 grid-rows-3 gap-2.5 min-h-0">
-                    {/* Slot 0: Big Main Camera (Takes 2x2 Top-Left) */}
-                    <div className="col-span-2 row-span-2 w-full h-full min-h-0 flex items-center justify-center">
+                <div className="flex-1 w-full h-full p-2.5 md:p-4 relative overflow-y-auto flex flex-col justify-start lg:justify-center items-center select-none">
+                  <div className="w-full max-w-[min(100%,calc((100vh-6.5rem)*16/9))] grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                    {/* Slot 0: Big Main Camera (Takes 2x2 Top-Left on Desktop, Full Width on Mobile/Tablet) */}
+                    <div className="sm:col-span-2 lg:col-span-2 lg:row-span-2 w-full aspect-video flex items-center justify-center">
                       <CameraCard 
                         camera={focusCam} 
                         onZoom={handleZoom} 
@@ -1232,13 +1493,13 @@ const CameraWall = () => {
                       />
                     </div>
 
-                    {/* Surrounding 5 secondary cameras */}
+                    {/* Surrounding 5 secondary cameras in strict 16:9 aspect-video */}
                     {pageOthers.map((cam, idx) => {
                       const actualIdx = focusStartIndex + idx + 1;
                       return (
                         <div 
                           key={cam.id} 
-                          className={`${slotClasses[idx] || ''} w-full h-full min-h-0 flex items-center justify-center animate-in fade-in zoom-in-95 duration-200`}
+                          className={`${slotClasses[idx] || ''} w-full aspect-video flex items-center justify-center animate-in fade-in zoom-in-95 duration-200`}
                         >
                           <CameraCard 
                             camera={cam} 
@@ -1292,23 +1553,17 @@ const CameraWall = () => {
             }
           })()
         ) : (
-          /* Standard 16:9 Grid Layouts (Auto, 2x2, 3x3, 4x4, Custom) with Drag & Drop */
-          <main className="flex-1 p-4 md:p-6 overflow-y-auto bg-zinc-950 flex flex-col justify-between relative">
+          /* Adaptive Zero-Scroll Desktop Matrix / Scrollable Mobile Grid */
+          <main className="flex-1 min-h-0 p-2 sm:p-3 overflow-y-auto lg:overflow-hidden bg-zinc-950 flex flex-col justify-between relative">
             <div 
-              key={currentPage}
-              className={`grid gap-4 w-full animate-in fade-in zoom-in-95 duration-300 ${
-                layout === 'cols-2' ? 'grid-cols-1 sm:grid-cols-2' :
-                layout === 'cols-3' ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3' :
-                layout === 'cols-4' ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4' :
-                layout === 'auto' ? 'grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4' :
-                'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
-              }`}
+              key={`${currentPage}-${layout}-${selectedDeviceFilter}`}
+              className={`grid gap-2 sm:gap-2.5 w-full lg:h-full lg:min-h-0 animate-in fade-in zoom-in-95 duration-200 ${getDesktopGridClass()}`}
               style={layout === 'custom' ? { gridTemplateColumns: `repeat(${customColumns}, minmax(0, 1fr))` } : {}}
             >
               {paginatedCameras.map((camera, idx) => {
                 const globalIndex = startIndex + idx;
                 return (
-                  <div key={camera.id} className="w-full aspect-video">
+                  <div key={camera.id} className="w-full aspect-video lg:aspect-auto lg:h-full min-h-0 min-w-0">
                     <CameraCard 
                       camera={camera} 
                       onZoom={handleZoom} 
@@ -1317,6 +1572,8 @@ const CameraWall = () => {
                       isWebRTCAvailable={isWebRTCAvailable} 
                       isPinned={camera.id === pinnedCameraId}
                       onPin={handlePinCamera}
+                      staggerIndex={idx}
+                      viewportFit={true}
                       isReordering={isReordering}
                       orderIndex={globalIndex}
                       onMoveLeft={() => handleMoveCamera(globalIndex, -1)}
@@ -1336,9 +1593,9 @@ const CameraWall = () => {
           </main>
         )}
 
-        {/* Floating Slide Navigation Overlay (Presentación Diapositivas) */}
+        {/* Compact Auto-Attenuated Slide Navigation Pill */}
         {totalPages > 1 && layout !== 'patrol' && (
-          <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-40 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-full px-4 py-2 shadow-2xl flex items-center gap-3 animate-in slide-in-from-bottom-4 duration-300">
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-40 bg-zinc-900/75 hover:bg-zinc-900/95 backdrop-blur-md border border-zinc-800/80 rounded-full px-3 py-1.5 shadow-2xl flex items-center gap-2 transition-opacity opacity-70 hover:opacity-100 animate-in slide-in-from-bottom-4 duration-300">
             <button 
               onClick={() => setCurrentPage(prev => (prev > 1 ? prev - 1 : totalPages))}
               className="p-1.5 hover:bg-zinc-800 rounded-full text-zinc-300 hover:text-white transition-all active:scale-90"
@@ -1386,25 +1643,25 @@ const CameraWall = () => {
             onClick={() => setZoomedCamera(null)}
           >
             {/* Header Toolbar */}
-            <div className="h-14 px-4 md:px-6 border-b border-zinc-800/80 flex items-center justify-between bg-zinc-950/90 backdrop-blur-lg shrink-0">
-              <div className="flex items-center gap-3">
-                <div>
-                  <h2 className="text-base md:text-lg font-bold text-white flex items-center gap-2">
-                    {zoomedCamera.name}
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.7)] animate-pulse" />
+            <div className="min-h-14 py-2 px-3 md:px-6 border-b border-zinc-800/80 flex flex-wrap items-center justify-between gap-2 bg-zinc-950/90 backdrop-blur-lg shrink-0">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="min-w-0">
+                  <h2 className="text-sm sm:text-base md:text-lg font-bold text-white flex items-center gap-2 truncate">
+                    <span className="truncate">{zoomedCamera.name}</span>
+                    <span className="w-2.5 h-2.5 shrink-0 rounded-full bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.7)] animate-pulse" />
                   </h2>
-                  <p className="text-xs text-zinc-400 font-mono flex items-center gap-2">
+                  <p className="text-[11px] sm:text-xs text-zinc-400 font-mono flex flex-wrap items-center gap-x-2 gap-y-0.5">
                     <span>Canal {zoomedCamera.channel}</span>
+                    <span className="hidden sm:inline">•</span>
+                    <span className="hidden sm:inline">{modalMode === 'live' ? 'Transmisión en Vivo (Baja Latencia)' : 'Modo Instantánea HD'}</span>
                     <span>•</span>
-                    <span>{modalMode === 'live' ? 'Transmisión en Vivo (Baja Latencia)' : 'Modo Instantánea HD'}</span>
-                    <span>•</span>
-                    <span className="text-emerald-400/90 font-medium">💾 {zoomedCamera.storage_location || 'Grabación Centralizada en NVR'}</span>
+                    <span className="text-emerald-400/90 font-medium truncate">💾 {zoomedCamera.storage_location || 'Grabación Centralizada en NVR'}</span>
                   </p>
                 </div>
               </div>
 
               {/* Modal Toolbar Actions */}
-              <div className="flex items-center gap-2 sm:gap-3" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center flex-wrap gap-1.5 sm:gap-2.5" onClick={(e) => e.stopPropagation()}>
                 {/* Switch Live / Snapshot */}
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && (
                   <div className="flex bg-zinc-900 p-1 rounded-lg border border-zinc-800 items-center">
@@ -1583,7 +1840,7 @@ const CameraWall = () => {
             </div>
 
             {/* Video Player Container Maximizado al 100% */}
-            <div className="flex-1 w-full h-[calc(100vh-3.5rem)] flex items-center justify-center p-0 md:p-2 bg-black relative overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex-1 min-h-0 w-full flex items-center justify-center p-0 sm:p-2 md:p-4 bg-black relative overflow-hidden" onClick={(e) => e.stopPropagation()}>
               {/* Botón Cámara Anterior */}
               {activeCameras.length > 1 && (
                 <button
@@ -1600,20 +1857,20 @@ const CameraWall = () => {
                     setModalAudioEnabled(false);
                     setModalStreamKey(prev => prev + 1);
                   }}
-                  className="absolute left-3 md:left-6 top-1/2 -translate-y-1/2 z-30 p-2.5 md:p-3 rounded-full bg-zinc-900/80 hover:bg-blue-600 text-zinc-300 hover:text-white backdrop-blur-md border border-zinc-700/50 shadow-2xl transition-all active:scale-90 cursor-pointer"
+                  className="absolute left-2 sm:left-4 md:left-6 top-1/2 -translate-y-1/2 z-30 p-2 sm:p-3 rounded-full bg-zinc-900/80 hover:bg-blue-600 text-zinc-300 hover:text-white backdrop-blur-md border border-zinc-700/50 shadow-2xl transition-all active:scale-90 cursor-pointer"
                   title="Cámara Anterior (Flecha Izquierda)"
                 >
                   <ChevronLeft size={24} />
                 </button>
               )}
 
-              {/* Video Player Box que ocupa todo el alto/ancho disponible sin barras del navegador */}
-              <div className="w-full h-full max-w-full max-h-full flex items-center justify-center relative bg-black">
+              {/* Video Player Box que respeta relación de aspecto 16:9 en modo Ajustar (contain) o llena pantalla en modo Llenar (cover) */}
+              <div className={`${videoFit === 'contain' ? 'aspect-video w-full max-w-full max-h-full' : 'w-full h-full'} flex items-center justify-center relative bg-black overflow-hidden rounded-none sm:rounded-xl sm:border sm:border-zinc-800/60 shadow-2xl`}>
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' ? (
                   <iframe 
                     ref={modalIframeRef}
                     key={`modal-stream-${zoomedCamera.id}-${modalQuality}-${modalStreamKey}-${videoFit}`}
-                    src={`/player.html?src=${modalQuality === 'hd' ? `camera_${zoomedCamera.id}_hd` : `camera_${zoomedCamera.id}`}&muted=${modalAudioEnabled ? '0' : '1'}&fit=${videoFit}`} 
+                    src={`/player.html?src=${modalQuality === 'hd' ? `camera_${zoomedCamera.id}_hd` : `camera_${zoomedCamera.id}`}&muted=${modalAudioEnabled ? '0' : '1'}&fit=${videoFit}&mode=${isTalking ? 'webrtc' : 'mse'}`} 
                     title={zoomedCamera.name}
                     className="w-full h-full max-h-full max-w-full border-0 z-10"
                     scrolling="no"
@@ -1623,15 +1880,15 @@ const CameraWall = () => {
                   <img 
                     src={zoomedCamera.url || `${api.defaults.baseURL}/cameras/${zoomedCamera.id}/snapshot?t=${Date.now()}`} 
                     alt={zoomedCamera.name} 
-                    className={`w-full h-full max-h-full max-w-full ${videoFit === 'cover' ? 'object-cover' : 'object-contain'}`}
+                    className={`w-full h-full max-h-full max-w-full bg-black ${videoFit === 'cover' ? 'object-cover' : 'object-contain'}`}
                   />
                 )}
 
                 {/* Floating Intercom Control Bar (Overlay en la parte inferior del video) */}
                 {isWebRTCAvailable && zoomedCamera.rtsp_url && modalMode === 'live' && isTalkCapable && (
-                  <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-40 flex flex-col items-center gap-2 pointer-events-auto">
+                  <div className="absolute bottom-3 sm:bottom-6 inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 z-40 flex flex-col items-center gap-2 pointer-events-auto">
                     {isTalking ? (
-                      <div className="bg-red-950/95 border-2 border-red-500/80 backdrop-blur-md rounded-2xl px-6 py-3 shadow-2xl flex items-center gap-4 animate-in slide-in-from-bottom-3 duration-300">
+                      <div className="bg-red-950/95 border-2 border-red-500/80 backdrop-blur-md rounded-2xl px-4 sm:px-6 py-2.5 sm:py-3 shadow-2xl flex flex-wrap items-center justify-center gap-3 sm:gap-4 animate-in slide-in-from-bottom-3 duration-300 max-w-full">
                         <div className="flex items-center gap-2">
                           <span className="w-3.5 h-3.5 rounded-full bg-red-500 animate-ping" />
                           <Mic size={22} className="text-red-400 animate-bounce" />

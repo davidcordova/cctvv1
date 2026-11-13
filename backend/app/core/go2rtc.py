@@ -11,6 +11,33 @@ from app.models.models import Camera
 
 GO2RTC_PROC = None
 
+def get_ffmpeg_path() -> str:
+    """Busca el ejecutable de ffmpeg en el directorio del ejecutable, backend o PATH del sistema."""
+    import shutil
+    candidates = []
+    if getattr(sys, 'frozen', False):
+        base_dir = os.path.dirname(sys.executable)
+        candidates.append(os.path.join(base_dir, "ffmpeg.exe"))
+        if hasattr(sys, '_MEIPASS'):
+            candidates.append(os.path.join(sys._MEIPASS, "ffmpeg.exe"))
+    
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    candidates.append(os.path.join(backend_dir, "ffmpeg.exe"))
+    candidates.append(os.path.join(backend_dir, "bin", "ffmpeg.exe"))
+    candidates.append(os.path.join(os.path.dirname(backend_dir), "ffmpeg.exe"))
+    candidates.append(os.path.join(os.path.dirname(backend_dir), "dist", "cctv_backend", "ffmpeg.exe"))
+    
+    for c in candidates:
+        if os.path.exists(c):
+            return os.path.abspath(c)
+            
+    which_path = shutil.which("ffmpeg")
+    if which_path:
+        return which_path
+        
+    return ""
+
+
 def get_go2rtc_paths():
     if getattr(sys, 'frozen', False):
         base_dir = os.path.dirname(sys.executable)
@@ -57,22 +84,18 @@ def sync_go2rtc_config():
             devices_by_id = {d.id: d for d in session.exec(select(Device)).all()}
 
             for camera in cameras:
-                if camera.rtsp_url:
-                    main_url = camera.rtsp_url.split("#")[0]
-                    device = devices_by_id.get(camera.device_id)
-                    is_dvr = (
-                        device 
-                        and str(device.device_type).upper() in ("DVR", "NVR") 
-                        and (device.channel_count or 1) > 1 
-                        and "ezviz" not in str(device.brand).lower()
-                    )
+                if not camera.rtsp_url:
+                    continue
+                if not getattr(camera, "is_active", True) or not getattr(camera, "is_installed", True):
+                    continue
 
-                    # Si ONVIF o audio bidireccional está habilitado, añadir backchannel
-                    onvif_active = getattr(camera, "onvif_enabled", False) or getattr(device, "onvif_enabled", False)
-                    user_enc = urllib.parse.quote(device.username or "admin", safe="")
-                    pass_enc = urllib.parse.quote(device.password or "", safe="")
+                main_url = camera.rtsp_url.split("#")[0]
+                device = devices_by_id.get(camera.device_id)
 
-                    if is_dvr and device.password:
+                # Generar URL de Substream (SD / Fluido / Ligero)
+                sub_url = None
+                if device and device.password:
+                    try:
                         sub_url = generate_substream_url(
                             device.host,
                             device.username,
@@ -80,41 +103,45 @@ def sync_go2rtc_config():
                             camera.channel,
                             device.brand
                         ).split("#")[0]
-                        
-                        stream_list = []
-                        if sub_url != main_url:
-                            stream_list.append(sub_url)
-                        stream_list.append(main_url)
-                        if onvif_active:
-                            stream_list.append(f"{main_url}#backchannel=0")
+                    except Exception:
+                        sub_url = None
 
-                        streams[f"camera_{camera.id}"] = stream_list if len(stream_list) > 1 else stream_list[0]
-                        streams[f"camera_{camera.id}_hd"] = [f"{main_url}#backchannel=0", main_url] if onvif_active else main_url
-                        streams[f"camera_{camera.id}_talk"] = [f"{main_url}#backchannel=1", main_url]
-                    elif device and "ezviz" in str(device.brand).lower():
-                        # Cámaras Ezviz (ej. H6c, C6N, H8c, H3c, TY1, CS-CV246): Flujos RTSP limpios (SD, HD y Talk)
-                        ezviz_sub = f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/Streaming/Channels/102"
-                        ezviz_main = f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/Streaming/Channels/101"
-                        ezviz_alt = f"rtsp://{user_enc}:{pass_enc}@{device.host}:554/h264/ch1/main/av_stream"
-                        ezviz_backchannel_1 = f"{ezviz_main}#backchannel=1"
-
-                        # Flujo ligero para muro (substream con fallback a mainstream)
-                        streams[f"camera_{camera.id}"] = [ezviz_sub, ezviz_main, ezviz_alt, main_url]
-                        
-                        # Flujo HD prioritario
-                        streams[f"camera_{camera.id}_hd"] = [ezviz_main, ezviz_sub, ezviz_alt, main_url]
-                        
-                        # Flujo dedicado para intercomunicador de voz
-                        streams[f"camera_{camera.id}_talk"] = [ezviz_backchannel_1, ezviz_main]
+                # Fallback heurístico si no se pudo generar desde el dispositivo
+                if not sub_url or sub_url == main_url:
+                    if "/Channels/" in main_url and main_url.endswith("01"):
+                        sub_url = main_url[:-2] + "02"
+                    elif "subtype=0" in main_url:
+                        sub_url = main_url.replace("subtype=0", "subtype=1")
                     else:
-                        onvif_src = f"onvif://{user_enc}:{pass_enc}@{device.host}:{device.port or 80}/"
-                        streams[f"camera_{camera.id}"] = [main_url, onvif_src, f"{main_url}#backchannel=0"]
-                        streams[f"camera_{camera.id}_hd"] = [main_url, onvif_src, f"{main_url}#backchannel=0"]
-                        streams[f"camera_{camera.id}_talk"] = [f"{main_url}#backchannel=1", main_url]
+                        sub_url = main_url
+
+                # 1. Flujo SD (Ligero para Muro y modo SD): Substream + fallback H.264 bajo demanda si el navegador no soporta H.265
+                if sub_url and sub_url != main_url:
+                    streams[f"camera_{camera.id}"] = [
+                        sub_url,
+                        main_url,
+                        f"ffmpeg:camera_{camera.id}#video=h264"
+                    ]
+                else:
+                    streams[f"camera_{camera.id}"] = [
+                        main_url,
+                        f"ffmpeg:camera_{camera.id}#video=h264"
+                    ]
+
+                # 2. Flujo HD (Alta Definición para Zoom): Mainstream + FFmpeg H.264 fallback si la cámara emite H.265
+                streams[f"camera_{camera.id}_hd"] = [
+                    main_url,
+                    f"ffmpeg:camera_{camera.id}_hd#video=h264"
+                ]
+
+                # 3. Flujo Talk (Intercomunicador / Audio bidireccional)
+                streams[f"camera_{camera.id}_talk"] = [
+                    f"{main_url}#backchannel=1",
+                    main_url
+                ]
         
         candidates = get_local_ip_candidates()
-        import shutil
-        ffmpeg_bin = shutil.which("ffmpeg") or ""
+        ffmpeg_bin = get_ffmpeg_path()
 
         config = {
             "api": {
@@ -130,7 +157,7 @@ def sync_go2rtc_config():
             },
             "streams": streams
         }
-        if ffmpeg_bin and (os.path.isabs(ffmpeg_bin) and os.path.exists(ffmpeg_bin) or shutil.which(ffmpeg_bin)):
+        if ffmpeg_bin:
             config["ffmpeg"] = {"bin": ffmpeg_bin}
 
         with open(config_path, "w", encoding="utf-8") as f:
@@ -140,14 +167,22 @@ def sync_go2rtc_config():
         # Notificar y registrar streams dinámicamente en go2rtc si ya se encuentra en ejecución
         try:
             with httpx.Client(timeout=2.0) as client:
-                res = client.get("http://localhost:1984/api/streams")
+                res = client.get("http://127.0.0.1:1984/api/streams")
                 if res.status_code == 200:
+                    try:
+                        existing = res.json() if isinstance(res.json(), dict) else {}
+                        for old_name in list(existing.keys()):
+                            if old_name.startswith("camera_") and old_name not in streams:
+                                client.delete("http://127.0.0.1:1984/api/streams", params={"src": old_name})
+                    except Exception:
+                        pass
+
                     for src_name, rtsp_entry in streams.items():
                         if isinstance(rtsp_entry, list):
                             params = [("name", src_name)] + [("src", s) for s in rtsp_entry]
-                            client.put("http://localhost:1984/api/streams", params=params)
+                            client.put("http://127.0.0.1:1984/api/streams", params=params)
                         else:
-                            client.put("http://localhost:1984/api/streams", params={"src": rtsp_entry, "name": src_name})
+                            client.put("http://127.0.0.1:1984/api/streams", params={"src": rtsp_entry, "name": src_name})
         except (httpx.ConnectError, httpx.ConnectTimeout):
             # Normal durante el arranque inicial antes de que el proceso go2rtc.exe inicie
             pass
@@ -159,17 +194,31 @@ def sync_go2rtc_config():
 
 GO2RTC_WATCHDOG_RUNNING = False
 WATCHDOG_THREAD = None
+GO2RTC_LOG_HANDLE = None
+
+
+def _close_log_handle():
+    global GO2RTC_LOG_HANDLE
+    if GO2RTC_LOG_HANDLE is not None:
+        try:
+            GO2RTC_LOG_HANDLE.close()
+        except Exception:
+            pass
+        GO2RTC_LOG_HANDLE = None
+
 
 def _watchdog_loop(binary_path, config_path):
-    global GO2RTC_PROC, GO2RTC_WATCHDOG_RUNNING
+    global GO2RTC_PROC, GO2RTC_WATCHDOG_RUNNING, GO2RTC_LOG_HANDLE
     log_path = os.path.join(os.path.dirname(binary_path), "go2rtc.log")
     while GO2RTC_WATCHDOG_RUNNING:
         if GO2RTC_PROC is None or GO2RTC_PROC.poll() is not None:
             print("go2rtc process not running, restarting...")
             try:
+                _close_log_handle()
+                GO2RTC_LOG_HANDLE = open(log_path, "a", encoding="utf-8", errors="ignore")
                 GO2RTC_PROC = subprocess.Popen(
                     [binary_path, "-config", config_path],
-                    stdout=open(log_path, "a"),
+                    stdout=GO2RTC_LOG_HANDLE,
                     stderr=subprocess.STDOUT,
                     cwd=os.path.dirname(binary_path)
                 )
@@ -179,7 +228,7 @@ def _watchdog_loop(binary_path, config_path):
         time.sleep(2)
 
 def start_go2rtc():
-    global GO2RTC_PROC, GO2RTC_WATCHDOG_RUNNING, WATCHDOG_THREAD
+    global GO2RTC_PROC, GO2RTC_WATCHDOG_RUNNING, WATCHDOG_THREAD, GO2RTC_LOG_HANDLE
     binary_path, config_path = get_go2rtc_paths()
     if not os.path.exists(binary_path):
         print(f"go2rtc.exe not found at {binary_path}. Running without WebRTC streaming.")
@@ -190,9 +239,11 @@ def start_go2rtc():
     
     print("Starting go2rtc process...")
     try:
+        _close_log_handle()
+        GO2RTC_LOG_HANDLE = open(log_path, "w", encoding="utf-8", errors="ignore")
         GO2RTC_PROC = subprocess.Popen(
             [binary_path, "-config", config_path],
-            stdout=open(log_path, "w"),
+            stdout=GO2RTC_LOG_HANDLE,
             stderr=subprocess.STDOUT,
             cwd=os.path.dirname(binary_path)
         )
@@ -218,3 +269,4 @@ def stop_go2rtc():
             print("go2rtc stopped.")
         except Exception as e:
             print(f"Error stopping go2rtc: {e}")
+    _close_log_handle()

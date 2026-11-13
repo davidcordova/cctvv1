@@ -28,10 +28,12 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import ExecutiveReportModal from '../components/ExecutiveReportModal';
 
 const ReportMgmt = () => {
   const { user } = useAuth();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState('audit'); // 'audit' | 'events'
   
@@ -102,7 +104,7 @@ const ReportMgmt = () => {
       setRejectionReason('');
     },
     onError: (err) => {
-      alert("Error al rechazar informe: " + (err.response?.data?.detail || err.message));
+      toast.error("Error al rechazar informe: " + (err.response?.data?.detail || err.message));
     }
   });
 
@@ -119,7 +121,7 @@ const ReportMgmt = () => {
       setCustomNotes('');
     },
     onError: (err) => {
-      alert("Error al guardar observaciones: " + (err.response?.data?.detail || err.message));
+      toast.error("Error al guardar observaciones: " + (err.response?.data?.detail || err.message));
     }
   });
 
@@ -135,7 +137,7 @@ const ReportMgmt = () => {
       queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
     },
     onError: (err) => {
-      alert("Error al eliminar informe: " + (err.response?.data?.detail || err.message));
+      toast.error("Error al eliminar informe: " + (err.response?.data?.detail || err.message));
     }
   });
 
@@ -183,13 +185,15 @@ const ReportMgmt = () => {
     try {
       const res = await api.get('/reports/executive-summary', { params: { force_new: true } });
       if (res.data && res.data.report_code) {
+        queryClient.setQueryData(['executiveSummary', res.data.report_code], res.data);
         queryClient.invalidateQueries({ queryKey: ['auditReportsList'] });
         queryClient.invalidateQueries({ queryKey: ['auditReportsHistory'] });
         setActiveReportCode(res.data.report_code);
         setIsExecutiveModalOpen(true);
+        toast.success(`Informe ${res.data.report_code} generado correctamente.`);
       }
     } catch (err) {
-      alert("Error al generar nuevo informe: " + (err.response?.data?.detail || err.message));
+      toast.error("Error al generar nuevo informe: " + (err.response?.data?.detail || err.message));
     } finally {
       setIsCreatingNew(false);
     }
@@ -208,7 +212,7 @@ const ReportMgmt = () => {
 
   const exportToCSV = () => {
     if (!filteredEventReports || filteredEventReports.length === 0) {
-      alert("No hay reportes que coincidan con los filtros actuales para exportar.");
+      toast.warning("No hay reportes que coincidan con los filtros actuales para exportar.");
       return;
     }
     const headers = ["ID", "Fecha y Hora", "Tipo de Evento", "Severidad", "Descripción"];
@@ -234,7 +238,7 @@ const ReportMgmt = () => {
 
   return (
     <>
-      <div className={`p-8 space-y-6 animate-in fade-in duration-500 max-w-7xl mx-auto ${isExecutiveModalOpen ? 'print:hidden' : ''}`}>
+      <div className={`p-4 sm:p-6 md:p-8 space-y-6 animate-in fade-in duration-500 max-w-[1800px] mx-auto ${isExecutiveModalOpen ? 'print:hidden' : ''}`}>
         
         {/* Header Principal */}
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b border-zinc-800 pb-5">
@@ -769,7 +773,7 @@ const ReportMgmt = () => {
                 type="button"
                 onClick={() => {
                   if (!rejectionReason.trim()) {
-                    alert("Debe escribir el motivo o justificación técnica del rechazo.");
+                    toast.warning("Debe escribir el motivo o justificación técnica del rechazo.");
                     return;
                   }
                   rejectMutation.mutate({

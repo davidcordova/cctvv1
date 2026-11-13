@@ -307,6 +307,74 @@ def get_udp_discovery_map() -> Dict[str, Dict]:
     return _scan_udp_multicast(timeout=0.8)
 
 
+def reconcile_dhcp_device_ips(session) -> int:
+    """
+    Reconcilia cambios de dirección IP por DHCP cruzando Número de Serie y dirección MAC
+    obtenidos por descubrimiento SADP contra los dispositivos registrados en la base de datos.
+    Actualiza automáticamente el host del dispositivo y las URLs RTSP de sus canales.
+    """
+    from sqlmodel import select
+    from app.models.models import Device, Camera, Report
+    from app.core.hikvision import generate_rtsp_url
+
+    udp_map = get_udp_discovery_map()
+    if not udp_map:
+        return 0
+
+    by_serial = {}
+    by_mac = {}
+    for host, info in udp_map.items():
+        sn = (info.get("serial") or "").strip()
+        if sn and not sn.startswith(("SN-", "ONVIF-", "MAC-")):
+            by_serial[sn.upper()] = info
+        mac = (info.get("mac_address") or "").strip().lower().replace("-", ":")
+        if mac and len(mac) == 17:
+            by_mac[mac] = info
+
+    devices = session.exec(select(Device)).all()
+    updated_count = 0
+
+    for dev in devices:
+        dev_sn = (dev.serial_number or "").strip().upper()
+        dev_mac = (dev.mac_address or "").strip().lower().replace("-", ":")
+        matched = None
+        if dev_sn and not dev_sn.startswith(("SN-", "ONVIF-", "MAC-")) and dev_sn in by_serial:
+            matched = by_serial[dev_sn]
+        elif dev_mac and dev_mac in by_mac:
+            matched = by_mac[dev_mac]
+
+        if matched and matched.get("host") and matched["host"] != dev.host:
+            old_host = dev.host
+            new_host = matched["host"]
+            dev.host = new_host
+            dev.is_online = True
+            if matched.get("model") and not dev.model:
+                dev.model = matched["model"]
+            if matched.get("firmware_version"):
+                dev.firmware_version = matched["firmware_version"]
+            if matched.get("mac_address"):
+                dev.mac_address = matched["mac_address"]
+            session.add(dev)
+
+            dev_cams = session.exec(select(Camera).where(Camera.device_id == dev.id)).all()
+            for cam in dev_cams:
+                cam.rtsp_url = generate_rtsp_url(new_host, dev.username, dev.password, cam.channel, dev.brand)
+                session.add(cam)
+
+            session.add(Report(
+                device_id=dev.id,
+                event_type="Actualización DHCP",
+                description=f"IP de {dev.name} actualizada automáticamente por Número de Serie/MAC: {old_host} -> {new_host}.",
+                severity="info"
+            ))
+            updated_count += 1
+
+    if updated_count > 0:
+        session.commit()
+    return updated_count
+
+
+
 def scan_network(timeout=3.0) -> List[Dict]:
     """
     Escanea la red local exhaustivamente para descubrir dispositivos CCTV (Dahua, Hikvision, Ezviz, ONVIF, etc.).

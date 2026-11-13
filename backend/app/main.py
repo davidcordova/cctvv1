@@ -41,55 +41,91 @@ async def check_connectivity(host: str, port: int) -> bool:
 
 async def _check_single_device(device: Device, do_deep_check: bool = False):
     from app.core.hikvision import HikvisionDriver
-    from datetime import datetime
     is_now_online = await check_connectivity(device.host, device.port)
     time_info = None
     storage_info = None
+    channels_info = None
 
     if is_now_online and do_deep_check:
         try:
             driver = HikvisionDriver(device)
-            # Consultar hora y almacenamiento con timeout corto protegido
-            time_info = await asyncio.wait_for(driver.get_device_time(), timeout=2.5)
-            storage_info = await asyncio.wait_for(driver.get_storage_status(), timeout=2.5)
+            # Consultar hora, almacenamiento y señal por canal en paralelo con timeout protegido
+            t_res, s_res, ch_res = await asyncio.gather(
+                asyncio.wait_for(driver.get_device_time(), timeout=2.5),
+                asyncio.wait_for(driver.get_storage_status(), timeout=2.5),
+                asyncio.wait_for(driver.get_channels_status(), timeout=2.5),
+                return_exceptions=True,
+            )
+            time_info = t_res if isinstance(t_res, dict) else None
+            storage_info = s_res if isinstance(s_res, dict) else None
+            channels_info = ch_res if isinstance(ch_res, dict) else None
         except Exception:
             pass
 
-    return device, is_now_online, time_info, storage_info
+    return device, is_now_online, time_info, storage_info, channels_info
 
 
 async def monitor_devices_loop():
-    await asyncio.sleep(5)
-    from datetime import datetime
+    await asyncio.sleep(2)
+    from datetime import datetime, timedelta, timezone
+    from app.models.models import Camera
+    from app.core.hikvision import set_last_telemetry_sync_ts
     iteration = 0
     while True:
         try:
             iteration += 1
-            # Realizar inspección profunda (disco/hora) solo cada 10 ciclos (~10 minutos)
-            do_deep_check = (iteration % 10 == 1)
+            # Inspección profunda inmediata al iniciar (ciclo 1) y luego cada 5 minutos
+            do_deep_check = (iteration == 1 or iteration % 5 == 0)
 
-            # 1. Obtener lista de dispositivos
+            # Cada 60 ciclos (~1 hora), purgar eventos de conexión antiguos (> 90 días) para evitar inflación infinita de BD
+            if iteration % 60 == 1:
+                try:
+                    cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
+                    with Session(engine) as session:
+                        old_reports = session.exec(select(Report).where(Report.timestamp < cutoff_date)).all()
+                        if old_reports:
+                            for old_r in old_reports:
+                                session.delete(old_r)
+                            session.commit()
+                except Exception:
+                    pass
+
+            # 1. Reconciliar cambios de IP por DHCP mediante SADP (Número de Serie / MAC)
+            if do_deep_check:
+                try:
+                    from app.core import scanner
+                    with Session(engine) as session:
+                        dhcp_changes = await asyncio.to_thread(scanner.reconcile_dhcp_device_ips, session)
+                    if dhcp_changes > 0:
+                        from app.core.go2rtc import sync_go2rtc_config
+                        await asyncio.to_thread(sync_go2rtc_config)
+                except Exception:
+                    pass
+
+            # 2. Obtener lista de dispositivos
             with Session(engine) as session:
                 devices = session.exec(select(Device)).all()
                 device_copies = [Device(**d.model_dump()) for d in devices]
 
             if device_copies:
-                # Comprobar dispositivos secuencialmente con micro-pausas para no saturar grabadores ni la red
-                results = []
-                for d in device_copies:
-                    try:
-                        res = await _check_single_device(d, do_deep_check=do_deep_check)
-                        results.append(res)
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.3)
+                # Comprobar dispositivos en paralelo controlado para respuesta ágil sin saturar la red
+                sem = asyncio.Semaphore(6)
+
+                async def _probe_with_sem(d_copy: Device):
+                    async with sem:
+                        return await _check_single_device(d_copy, do_deep_check=do_deep_check)
+
+                results = await asyncio.gather(
+                    *[_probe_with_sem(d) for d in device_copies],
+                    return_exceptions=True
+                )
                 
-                # 2. Guardar cambios en BD en una sesión breve
+                # 3. Guardar cambios en BD en una sesión breve
                 with Session(engine) as session:
                     for res in results:
                         if not res or isinstance(res, Exception):
                             continue
-                        device, is_now_online, time_info, storage_info = res
+                        device, is_now_online, time_info, storage_info, channels_info = res
                         db_device = session.get(Device, device.id)
                         if not db_device:
                             continue
@@ -105,25 +141,34 @@ async def monitor_devices_loop():
                             )
                             session.add(report)
 
+                        if not is_now_online:
+                            db_device.hdd_status = "Sin Conexión al Grabador"
+                            if "IPC" in str(db_device.device_type).upper():
+                                db_device.hdd_capacity_total_gb = 0.0
+                                db_device.hdd_capacity_free_gb = 0.0
+                                db_device.storage_media_type = "Sin Almacenamiento Local"
+
                         # Actualizar métricas reales de tiempo si se obtuvieron
                         if time_info and is_now_online:
                             prev_offset = db_device.time_offset_seconds or 0
-                            new_offset = time_info.get("offset_seconds", 0)
-                            db_device.time_offset_seconds = new_offset
-                            try:
-                                db_device.device_time = datetime.fromisoformat(time_info.get("device_time", ""))
-                            except Exception:
-                                pass
+                            new_offset = time_info.get("offset_seconds")
+                            if new_offset is not None:
+                                db_device.time_offset_seconds = new_offset
+                                if time_info.get("device_time"):
+                                    try:
+                                        db_device.device_time = datetime.fromisoformat(time_info.get("device_time", ""))
+                                    except Exception:
+                                        pass
 
-                            # Si el desfase superó los 5 minutos y antes no estaba reportado
-                            if abs(new_offset) > 300 and abs(prev_offset) <= 300:
-                                report_drift = Report(
-                                    device_id=db_device.id,
-                                    event_type="Desfase Horario",
-                                    description=f"Se detectó desfase horario crítico en {db_device.name}: {round(new_offset/60)} min respecto al servidor.",
-                                    severity="warning"
-                                )
-                                session.add(report_drift)
+                                # Si el desfase superó los 5 minutos y antes no estaba reportado
+                                if abs(new_offset) > 300 and abs(prev_offset) <= 300:
+                                    report_drift = Report(
+                                        device_id=db_device.id,
+                                        event_type="Desfase Horario",
+                                        description=f"Se detectó desfase horario crítico en {db_device.name}: {round(new_offset/60)} min respecto al servidor.",
+                                        severity="warning"
+                                    )
+                                    session.add(report_drift)
 
                         # Actualizar almacenamiento real si se obtuvo
                         if storage_info and is_now_online:
@@ -132,8 +177,24 @@ async def monitor_devices_loop():
                             db_device.hdd_capacity_free_gb = storage_info.get("free_gb", db_device.hdd_capacity_free_gb)
                             db_device.storage_media_type = storage_info.get("media_type", db_device.storage_media_type)
 
+                        # Actualizar señal de video y grabación real por canal si el hardware la reportó
+                        if channels_info and is_now_online:
+                            dev_cams = session.exec(select(Camera).where(Camera.device_id == db_device.id)).all()
+                            cams_by_ch = {c.channel: c for c in dev_cams}
+                            for ch_num, ch_info in channels_info.items():
+                                cam_obj = cams_by_ch.get(ch_num)
+                                if not cam_obj:
+                                    continue
+                                if ch_info.get("has_video_signal") is not None:
+                                    cam_obj.has_video_signal = bool(ch_info["has_video_signal"])
+                                if ch_info.get("is_recording") is not None:
+                                    cam_obj.is_recording = bool(ch_info["is_recording"])
+                                session.add(cam_obj)
+
                         session.add(db_device)
                     session.commit()
+                    if do_deep_check:
+                        set_last_telemetry_sync_ts()
         except Exception as e:
             print(f"Error in device monitoring loop: {e}")
         await asyncio.sleep(60)

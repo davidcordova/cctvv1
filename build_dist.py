@@ -39,20 +39,32 @@ def main():
     log("Step 1: Compilando Frontend React/Vite...")
     run_cmd("npm run build", cwd=FRONTEND_DIR)
 
-    log("Step 2: Verificando/Instalando PyInstaller...")
-    run_cmd(f'"{py_exe}" -m pip install pyinstaller', cwd=PROJECT_DIR)
+    log("Step 2: Verificando PyInstaller...")
+    if subprocess.run([py_exe, "-c", "import PyInstaller"], capture_output=True).returncode != 0:
+        run_cmd(f'"{py_exe}" -m pip install pyinstaller', cwd=PROJECT_DIR)
 
     log("Step 3: Compilando Backend con PyInstaller...")
     spec_path = os.path.join(PROJECT_DIR, "cctv_backend.spec")
     run_cmd(f'"{py_exe}" -m PyInstaller --noconfirm "{spec_path}"', cwd=PROJECT_DIR)
 
-    log("Step 4: Asegurando binarios externos (go2rtc.exe y configuraciones)...")
-    for fname in ["go2rtc.exe", "go2rtc.yaml", "ezviz_session.json"]:
+    log("Step 4: Asegurando binarios externos (go2rtc.exe, ffmpeg.exe) y go2rtc.yaml limpio...")
+    for fname in ["go2rtc.exe", "ffmpeg.exe"]:
         f_src = os.path.join(BACKEND_DIR, fname)
         f_dest = os.path.join(OUTPUT_DIR, fname)
         if os.path.exists(f_src):
             shutil.copy2(f_src, f_dest)
             print(f"Copiado {fname} a la carpeta de distribución.")
+        elif fname == "ffmpeg.exe":
+            # Si no está en backend, intentar localizar desde PATH o WinGet
+            ffmpeg_sys = shutil.which("ffmpeg")
+            if ffmpeg_sys and os.path.exists(ffmpeg_sys):
+                shutil.copy2(ffmpeg_sys, f_dest)
+                print(f"Copiado {fname} desde el sistema a la carpeta de distribución.")
+
+    go2rtc_yaml_dest = os.path.join(OUTPUT_DIR, "go2rtc.yaml")
+    with open(go2rtc_yaml_dest, "w", encoding="utf-8") as f:
+        f.write('api:\n  listen: ":1984"\nrtsp:\n  listen: ":8554"\nwebrtc:\n  listen: ":8555"\nstreams: {}\n')
+    print("Generado go2rtc.yaml limpio (sin credenciales locales) en la carpeta de distribución.")
 
     log("Step 5: Creando Lanzadores en Lote (Iniciar_CCTV.bat y Detener_CCTV.bat)...")
     iniciar_bat = os.path.join(OUTPUT_DIR, "Iniciar_CCTV.bat")

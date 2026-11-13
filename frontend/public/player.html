@@ -123,12 +123,75 @@
       0% { box-shadow: 0 0 5px rgba(239, 68, 68, 0.4); transform: scale(1); }
       100% { box-shadow: 0 0 16px rgba(239, 68, 68, 0.8); transform: scale(1.03); }
     }
+    .error-hud {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background: rgba(9, 9, 11, 0.92);
+      color: #f4f4f5;
+      padding: 20px;
+      text-align: center;
+      z-index: 20;
+      font-family: system-ui, -apple-system, sans-serif;
+      transition: opacity 0.25s ease;
+    }
+    .error-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+    .error-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #f87171;
+      letter-spacing: -0.01em;
+    }
+    .error-desc {
+      font-size: 11px;
+      color: #a1a1aa;
+      max-width: 260px;
+      line-height: 1.4;
+    }
+    .btn-retry {
+      margin-top: 4px;
+      background: #27272a;
+      hover: background: #3f3f46;
+      color: #fafafa;
+      border: 1px solid #3f3f46;
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-retry:hover {
+      background: #2563eb;
+      border-color: #3b82f6;
+    }
   </style>
 </head>
 <body>
   <div id="loader" class="loader">
     <div class="spinner"></div>
-    <span class="loader-text">Conectando señal...</span>
+    <span class="loader-text" id="loader-text">Conectando señal...</span>
+  </div>
+
+  <div id="error-hud" class="error-hud hidden">
+    <div class="error-icon">⚠️</div>
+    <div class="error-title">Señal no disponible</div>
+    <div class="error-desc" id="error-desc">Esperando flujo de video del grabador...</div>
+    <button type="button" id="btn-retry" class="btn-retry">Reintentar</button>
   </div>
 
   <div id="talk-hud" class="talk-hud hidden">
@@ -151,8 +214,11 @@
     const src = params.get('src') || '';
     const isMuted = params.get('muted') !== '0';
     const isTalk = params.get('talk') === '1' || params.get('mic') === '1';
+    const isWall = params.get('wall') === '1';
+    const modeParam = params.get('mode') || '';
     const fit = params.get('fit') || 'contain';
     const host = window.location.hostname || 'localhost';
+    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 
     if (fit === 'cover') {
       document.body.classList.add('fit-cover');
@@ -160,10 +226,84 @@
 
     const loaderEl = document.getElementById('loader');
     const talkHudEl = document.getElementById('talk-hud');
+    const errorHudEl = document.getElementById('error-hud');
+    const errorDescEl = document.getElementById('error-desc');
+    const btnRetry = document.getElementById('btn-retry');
+
+    let streamStarted = false;
+    let watchdogTimer = null;
+    let checkPlayingInterval = null;
+    let liveSyncInterval = null;
+    let mutationObs = null;
+    let currentMode = null;
+    let didFallbackWebrtc = false;
 
     const hideLoader = () => {
       if (loaderEl) loaderEl.classList.add('hidden');
     };
+
+    function checkIsVideoPlaying() {
+      if (!currentPlayer) return false;
+      const v = currentPlayer.querySelector('video') || currentPlayer.video;
+      if (!v) return false;
+      // El video se considera en reproducción si tiene tiempo transcurrido, buffer listo o dimensiones activas
+      if ((v.currentTime > 0 && !v.paused && !v.ended) || v.readyState >= 2 || (v.videoWidth > 0 && v.currentTime > 0)) {
+        return true;
+      }
+      return false;
+    }
+
+    const hideError = () => {
+      if (errorHudEl) errorHudEl.classList.add('hidden');
+    };
+
+    const showError = (message) => {
+      // Regla de oro: NUNCA mostrar tarjeta de error si el video está reproduciéndose
+      if (checkIsVideoPlaying()) {
+        hideError();
+        return;
+      }
+      hideLoader();
+      if (errorDescEl) errorDescEl.textContent = message || 'Sin respuesta del flujo de video';
+      if (errorHudEl) errorHudEl.classList.remove('hidden');
+    };
+
+    const onVideoActive = () => {
+      if (streamStarted) return;
+      streamStarted = true;
+      if (watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
+      if (checkPlayingInterval) {
+        clearInterval(checkPlayingInterval);
+        checkPlayingInterval = null;
+      }
+      if (mutationObs) {
+        mutationObs.disconnect();
+        mutationObs = null;
+      }
+      hideLoader();
+      hideError();
+      window.parent.postMessage({ type: 'stream_playing', src: src }, '*');
+    };
+
+    function attachVideoListeners(v) {
+      if (!v || v.__listenersBound) return;
+      v.__listenersBound = true;
+
+      // Escuchar únicamente eventos iniciales de arranque (sin timeupdate/progress para evitar tormentas de postMessage)
+      const mediaEvents = ['playing', 'loadeddata', 'canplay'];
+      mediaEvents.forEach(evt => {
+        v.addEventListener(evt, () => {
+          onVideoActive();
+        }, { once: true });
+      });
+
+      if (checkIsVideoPlaying()) {
+        onVideoActive();
+      }
+    }
 
     if (isTalk && talkHudEl) {
       talkHudEl.classList.remove('hidden');
@@ -171,22 +311,64 @@
 
     let currentPlayer = null;
 
-    if (src) {
+    function resolveInitialMode() {
+      if (isTalk) return 'webrtc';
+      if (modeParam) return modeParam;
+      const hasMse = ('MediaSource' in window || 'ManagedMediaSource' in window);
+      return hasMse ? 'mse' : 'webrtc';
+    }
+
+    function startStream(overrideMode = null) {
+      if (!src) return;
+      streamStarted = false;
+      hideError();
+      if (loaderEl) loaderEl.classList.remove('hidden');
+
+      if (!overrideMode) {
+        didFallbackWebrtc = false;
+      }
+      currentMode = overrideMode || resolveInitialMode();
+
+      if (watchdogTimer) {
+        clearTimeout(watchdogTimer);
+        watchdogTimer = null;
+      }
+      if (checkPlayingInterval) {
+        clearInterval(checkPlayingInterval);
+        checkPlayingInterval = null;
+      }
+      if (liveSyncInterval) {
+        clearInterval(liveSyncInterval);
+        liveSyncInterval = null;
+      }
+      if (mutationObs) {
+        mutationObs.disconnect();
+        mutationObs = null;
+      }
+
+      if (currentPlayer) {
+        try {
+          currentPlayer.remove();
+        } catch (e) {}
+        currentPlayer = null;
+      }
+
       const player = document.createElement('video-rtc');
       currentPlayer = player;
-      player.src = `ws://${host}:1984/api/ws?src=${encodeURIComponent(src)}`;
-      player.mode = isTalk ? 'webrtc' : 'webrtc,mse,hls';
-      player.media = isTalk ? 'video,audio,microphone' : 'video,audio';
+      player.src = `${wsProto}//${host}:1984/api/ws?src=${encodeURIComponent(src)}`;
+      // Modo único limpio (sin carrera WebRTC+MSE simultánea): MSE para fluidez H.264/H.265 por GPU, WebRTC para talk/fallback
+      player.mode = currentMode;
+      // Si la cámara está silenciada (ej. cuadrícula multicámara), pedir solo pista de video para ahorrar ancho de banda
+      player.media = isTalk ? 'video,audio,microphone' : (isMuted ? 'video' : 'video,audio');
       player.background = true;
-      
-      player.addEventListener('loadeddata', hideLoader);
-      player.addEventListener('playing', hideLoader);
-      player.addEventListener('canplay', hideLoader);
+      if (isWall) {
+        player.visibilityThreshold = 0.05;
+      }
 
       document.body.appendChild(player);
 
-      const enforceMute = () => {
-        const v = player.querySelector('video');
+      const enforceMuteAndBind = () => {
+        const v = player.querySelector('video') || player.video;
         if (v) {
           v.muted = isMuted;
           v.defaultMuted = isMuted;
@@ -196,24 +378,111 @@
           } else {
             v.removeAttribute('muted');
           }
-          v.play().then(hideLoader).catch(() => {});
+          attachVideoListeners(v);
+          v.play().then(() => {
+            if (checkIsVideoPlaying()) onVideoActive();
+          }).catch(() => {});
+          
+          v.onerror = () => {
+            if (currentMode === 'mse' && !didFallbackWebrtc && !isTalk) {
+              didFallbackWebrtc = true;
+              startStream('webrtc');
+              return;
+            }
+            if (!streamStarted && !checkIsVideoPlaying()) {
+              showError('Error de reproducción en el navegador');
+              window.parent.postMessage({ type: 'stream_error', src: src, reason: 'media_error' }, '*');
+            }
+          };
         }
       };
 
-      const obs = new MutationObserver(() => {
-        enforceMute();
+      mutationObs = new MutationObserver(() => {
+        enforceMuteAndBind();
       });
-      obs.observe(player, { childList: true, subtree: true });
+      mutationObs.observe(player, { childList: true, subtree: true });
 
-      setTimeout(enforceMute, 150);
-      setTimeout(enforceMute, 600);
-      setTimeout(hideLoader, 2000);
+      // Verificaciones periódicas tempranas
+      setTimeout(enforceMuteAndBind, 50);
+      setTimeout(enforceMuteAndBind, 200);
+      setTimeout(enforceMuteAndBind, 600);
+
+      // Verificación activa cada 250ms únicamente hasta que arranque el primer fotograma
+      checkPlayingInterval = setInterval(() => {
+        const v = player.querySelector('video') || player.video;
+        if (v) {
+          attachVideoListeners(v);
+          if (checkIsVideoPlaying()) {
+            onVideoActive();
+          }
+        }
+      }, 250);
+
+      // Sincronización Live-Edge para mantener latencia en vivo (< 1.5s) en transmisiones MSE 24/7
+      if (!isTalk) {
+        liveSyncInterval = setInterval(() => {
+          if (!currentPlayer) return;
+          const v = currentPlayer.querySelector('video') || currentPlayer.video;
+          if (!v || v.paused || !v.buffered || v.buffered.length === 0) return;
+          try {
+            const end = v.buffered.end(v.buffered.length - 1);
+            const lag = end - v.currentTime;
+            if (lag > 4.0) {
+              v.currentTime = Math.max(0, end - 0.25);
+              v.playbackRate = 1.0;
+            } else if (lag > 1.4) {
+              v.playbackRate = 1.06;
+            } else if (lag <= 0.7 && v.playbackRate !== 1.0) {
+              v.playbackRate = 1.0;
+            }
+          } catch (e) {}
+        }, 3000);
+      }
+
+      // Watchdog: si MSE no logra arrancar en 7s intentar WebRTC fallback; si falla definitivamente en 12s reportar error
+      watchdogTimer = setTimeout(() => {
+        if (checkIsVideoPlaying()) {
+          onVideoActive();
+          return;
+        }
+        if (currentMode === 'mse' && !didFallbackWebrtc && !isTalk) {
+          didFallbackWebrtc = true;
+          startStream('webrtc');
+          return;
+        }
+        if (!streamStarted) {
+          showError('Tiempo de espera agotado al recibir flujo de video');
+          window.parent.postMessage({ type: 'stream_error', src: src, reason: 'timeout' }, '*');
+        }
+      }, currentMode === 'mse' && !didFallbackWebrtc ? 7000 : 12000);
+    }
+
+    window.addEventListener('beforeunload', () => {
+      if (watchdogTimer) clearTimeout(watchdogTimer);
+      if (checkPlayingInterval) clearInterval(checkPlayingInterval);
+      if (liveSyncInterval) clearInterval(liveSyncInterval);
+      if (mutationObs) mutationObs.disconnect();
+    });
+
+    if (btnRetry) {
+      btnRetry.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startStream();
+      });
+    }
+
+    if (src) {
+      startStream();
     }
 
     // Receptor de mensajes desde el contenedor padre (React)
     window.addEventListener('message', async (event) => {
       const data = event.data;
       if (!data || typeof data !== 'object') return;
+
+      if (data.type === 'reload_stream') {
+        startStream();
+      }
 
       if (data.type === 'set_muted' && currentPlayer) {
         const v = currentPlayer.querySelector('video');

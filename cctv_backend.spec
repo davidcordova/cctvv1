@@ -9,7 +9,6 @@ project_dir = os.path.abspath(os.path.dirname('.'))
 backend_dir = os.path.join(project_dir, 'backend')
 frontend_dist = os.path.join(project_dir, 'frontend', 'dist')
 go2rtc_exe = os.path.join(backend_dir, 'go2rtc.exe')
-go2rtc_yaml = os.path.join(backend_dir, 'go2rtc.yaml')
 
 datas = [
     (frontend_dist, 'static'),
@@ -17,8 +16,6 @@ datas = [
 
 if os.path.exists(go2rtc_exe):
     datas.append((go2rtc_exe, '.'))
-if os.path.exists(go2rtc_yaml):
-    datas.append((go2rtc_yaml, '.'))
 
 hiddenimports = [
     'uvicorn.logging',
@@ -36,12 +33,16 @@ hiddenimports = [
     'pydantic_settings',
     'passlib',
     'passlib.handlers.bcrypt',
+    'bcrypt',
+    'multipart',
+    'python_multipart',
     'cryptography',
     'jose',
     'psycopg2',
     'pymysql',
     'yaml',
     'httpx',
+    'psutil',
 ] + collect_submodules('app')
 
 a = Analysis(

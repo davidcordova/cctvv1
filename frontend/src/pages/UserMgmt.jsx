@@ -2,8 +2,10 @@ import React, { useState } from 'react';
 import { UserPlus, Shield, Mail, Trash2, Edit, CheckCircle2, XCircle, Video, Camera as CameraIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
+import { useToast } from '../context/ToastContext';
 
 const UserMgmt = () => {
+  const toast = useToast();
   const queryClient = useQueryClient();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
@@ -47,9 +49,10 @@ const UserMgmt = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
+      toast.success('Usuario guardado correctamente.');
       closeModal();
     },
-    onError: (err) => alert('Error: ' + (err.response?.data?.detail || err.message))
+    onError: (err) => toast.error('Error: ' + (err.response?.data?.detail || err.message))
   });
 
   const openModal = (user = null) => {
@@ -91,12 +94,13 @@ const UserMgmt = () => {
     if(confirm(`¿Eliminar al usuario ${user.username}?`)) {
       api.delete(`/users/${user.id}`).then(() => {
         queryClient.invalidateQueries({ queryKey: ['users'] });
-      }).catch(err => alert('Error: ' + err.message));
+        toast.success(`Usuario ${user.username} eliminado.`);
+      }).catch(err => toast.error('Error: ' + err.message));
     }
   };
 
   return (
-    <div className="p-8 space-y-6">
+    <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-[1800px] mx-auto">
       <header className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Gestión de Usuarios</h1>
@@ -132,7 +136,8 @@ const UserMgmt = () => {
       </div>
 
       <div className="card-zinc p-0 overflow-hidden">
-        <table className="w-full text-left">
+        <div className="overflow-x-auto w-full">
+          <table className="w-full text-left min-w-[640px]">
           <thead>
             <tr className="bg-zinc-900/50 border-b border-zinc-800">
               <th className="px-6 py-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Usuario</th>
@@ -203,6 +208,7 @@ const UserMgmt = () => {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       {/* Add/Edit User Modal */}

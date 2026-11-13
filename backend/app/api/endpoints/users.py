@@ -30,10 +30,17 @@ def read_users(
     limit: int = 100,
 ) -> Any:
     users = session.exec(select(User).offset(skip).limit(limit)).all()
+    user_ids = [u.id for u in users if u.id is not None]
+    links_by_user = {}
+    if user_ids:
+        all_links = session.exec(select(UserCameraLink).where(UserCameraLink.user_id.in_(user_ids))).all()
+        for link in all_links:
+            links_by_user.setdefault(link.user_id, []).append(link.camera_id)
+
     result = []
     for u in users:
         u_read = UserRead.model_validate(u)
-        u_read.camera_ids = _get_user_camera_ids(session, u.id)
+        u_read.camera_ids = links_by_user.get(u.id, [])
         result.append(u_read)
     return result
 

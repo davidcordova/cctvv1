@@ -141,9 +141,9 @@ async def create_device(
     session.commit()
     session.refresh(device)
 
-    # Sync WebRTC server config
+    # Sync WebRTC server config sin bloquear el event loop
     from app.core.go2rtc import sync_go2rtc_config
-    sync_go2rtc_config()
+    await asyncio.to_thread(sync_go2rtc_config)
 
     return device
 
@@ -281,9 +281,9 @@ async def update_device(
     session.commit()
     session.refresh(device)
     
-    # Sync WebRTC server config
+    # Sync WebRTC server config sin bloquear el event loop
     from app.core.go2rtc import sync_go2rtc_config
-    sync_go2rtc_config()
+    await asyncio.to_thread(sync_go2rtc_config)
     
     return device
 
@@ -365,33 +365,56 @@ async def sync_device_time(
     if not device:
         raise HTTPException(status_code=404, detail="Dispositivo no encontrado")
     
+    driver = HikvisionDriver(device)
+    sync_err = None
     try:
-        driver = HikvisionDriver(device)
-        result = await driver.sync_time()
-        
-        now = datetime.now()
-        device.device_time = now
-        device.time_offset_seconds = 0
+        await driver.sync_time()
+    except Exception as e:
+        sync_err = str(e)
+
+    # Verificar siempre la hora real reportada por el hardware (ISAPI/CGI o cabecera RTSP Date)
+    verification = await driver.get_device_time()
+    now = datetime.now()
+
+    if verification.get("device_time"):
+        try:
+            device.device_time = datetime.fromisoformat(verification["device_time"])
+        except Exception:
+            pass
+        if verification.get("offset_seconds") is not None:
+            device.time_offset_seconds = verification["offset_seconds"]
+
         device.time_synced_at = now
         session.add(device)
-        
+
+        source_label = "RTSP" if verification.get("source") == "RTSP" else "ISAPI/CGI"
+        if sync_err and abs(device.time_offset_seconds or 0) > 300:
+            session.commit()
+            raise HTTPException(
+                status_code=500,
+                detail=f"El dispositivo reporta hora {device.device_time.strftime('%d/%m/%Y %H:%M:%S')} (desfase {round((device.time_offset_seconds or 0)/60)} min), pero rechazó el ajuste remoto HTTP ({sync_err})."
+            )
+
         report = Report(
             device_id=device.id,
             event_type="Sincronización de Hora",
-            description=f"Fecha y hora del grabador {device.name} sincronizada exitosamente con el servidor local ({now.strftime('%d/%m/%Y %H:%M:%S')}).",
+            description=f"Fecha y hora del dispositivo {device.name} verificada/sincronizada vía {source_label} ({device.device_time.strftime('%d/%m/%Y %H:%M:%S')}, desfase {device.time_offset_seconds}s).",
             severity="info"
         )
         session.add(report)
         session.commit()
         session.refresh(device)
-        
+
         return {
             "ok": True,
-            "message": f"Grabador '{device.name}' sincronizado con la hora del servidor ({now.strftime('%H:%M:%S')})",
+            "message": f"Dispositivo '{device.name}' verificado ({source_label}): {device.device_time.strftime('%d/%m/%Y %H:%M:%S')} (desfase {device.time_offset_seconds}s)",
             "device": device
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al sincronizar fecha/hora: {str(e)}")
+
+    raise HTTPException(
+        status_code=500,
+        detail=f"No fue posible sincronizar ni verificar la hora de '{device.name}' ({device.host}). {sync_err or ''}".strip()
+    )
 
 
 @router.post("/sync-all-time")
@@ -401,34 +424,65 @@ async def sync_all_devices_time(
     current_user: User = Depends(require_operator_or_admin),
 ) -> Any:
     from datetime import datetime
+    try:
+        dhcp_updated = await asyncio.to_thread(scanner.reconcile_dhcp_device_ips, session)
+        if dhcp_updated > 0:
+            from app.core.go2rtc import sync_go2rtc_config
+            await asyncio.to_thread(sync_go2rtc_config)
+    except Exception:
+        pass
+
     devices = session.exec(select(Device)).all()
     now = datetime.now()
 
     async def _sync_single(dev: Device):
         if not dev.is_online:
             return {"id": dev.id, "name": dev.name, "status": "offline"}
+        driver = HikvisionDriver(dev)
+        write_ok = False
+        write_err = None
         try:
-            driver = HikvisionDriver(dev)
-            await asyncio.wait_for(driver.sync_time(), timeout=3.0)
-            return {"id": dev.id, "name": dev.name, "status": "synced", "now": now}
+            await asyncio.wait_for(driver.sync_time(), timeout=4.0)
+            write_ok = True
         except Exception as e:
-            return {"id": dev.id, "name": dev.name, "status": "error", "error": str(e)}
+            write_err = str(e)
+
+        try:
+            verif = await asyncio.wait_for(driver.get_device_time(), timeout=3.5)
+            if verif and verif.get("device_time"):
+                return {
+                    "id": dev.id,
+                    "name": dev.name,
+                    "status": "synced" if (write_ok or abs(verif.get("offset_seconds") or 0) <= 300) else "drifted",
+                    "write_ok": write_ok,
+                    "verif": verif,
+                    "now": now
+                }
+        except Exception as e:
+            write_err = str(e)
+
+        return {"id": dev.id, "name": dev.name, "status": "error", "error": write_err or "Sin respuesta de reloj"}
 
     results = await asyncio.gather(*[_sync_single(d) for d in devices], return_exceptions=False)
     
     for r in results:
-        if r.get("status") == "synced":
+        if r.get("verif") and r["verif"].get("device_time"):
             dev_obj = session.get(Device, r["id"])
             if dev_obj:
-                dev_obj.device_time = r["now"]
-                dev_obj.time_offset_seconds = 0
+                verif = r["verif"]
+                try:
+                    dev_obj.device_time = datetime.fromisoformat(verif["device_time"])
+                except Exception:
+                    pass
+                if verif.get("offset_seconds") is not None:
+                    dev_obj.time_offset_seconds = verif["offset_seconds"]
                 dev_obj.time_synced_at = r["now"]
                 session.add(dev_obj)
 
     session.commit()
     return {
         "ok": True,
-        "message": f"Sincronización masiva de hora completada a las {now.strftime('%H:%M:%S')}",
+        "message": f"Sincronización y verificación masiva de hora completada a las {now.strftime('%H:%M:%S')}",
         "results": results
     }
 
@@ -439,27 +493,44 @@ async def refresh_all_devices(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_operator_or_admin),
 ) -> Any:
-    from app.core.hikvision import HikvisionDriver
+    from app.core.hikvision import HikvisionDriver, set_last_telemetry_sync_ts
+    from app.main import check_connectivity
     from datetime import datetime
+
+    try:
+        dhcp_updated = await asyncio.to_thread(scanner.reconcile_dhcp_device_ips, session)
+        if dhcp_updated > 0:
+            from app.core.go2rtc import sync_go2rtc_config
+            await asyncio.to_thread(sync_go2rtc_config)
+    except Exception:
+        pass
+
     devices = session.exec(select(Device)).all()
+    dev_snapshots = [Device(**d.model_dump()) for d in devices]
 
     async def _refresh_single(dev: Device):
-        if not dev.is_online:
-            return None
+        is_online = await check_connectivity(dev.host, dev.port)
+        if not is_online:
+            return {"id": dev.id, "is_online": False, "time_info": {}, "storage_info": {}, "channels_info": {}}
         try:
             driver = HikvisionDriver(dev)
-            time_task = asyncio.wait_for(driver.get_device_time(), timeout=3.0)
-            storage_task = asyncio.wait_for(driver.get_storage_status(), timeout=3.0)
-            time_info, storage_info = await asyncio.gather(time_task, storage_task, return_exceptions=True)
+            time_task = asyncio.wait_for(driver.get_device_time(), timeout=2.5)
+            storage_task = asyncio.wait_for(driver.get_storage_status(), timeout=2.5)
+            channels_task = asyncio.wait_for(driver.get_channels_status(), timeout=2.5)
+            time_info, storage_info, channels_info = await asyncio.gather(
+                time_task, storage_task, channels_task, return_exceptions=True
+            )
             return {
                 "id": dev.id,
+                "is_online": True,
                 "time_info": time_info if isinstance(time_info, dict) else {},
-                "storage_info": storage_info if isinstance(storage_info, dict) else {}
+                "storage_info": storage_info if isinstance(storage_info, dict) else {},
+                "channels_info": channels_info if isinstance(channels_info, dict) else {},
             }
         except Exception:
-            return None
+            return {"id": dev.id, "is_online": True, "time_info": {}, "storage_info": {}, "channels_info": {}}
 
-    results = await asyncio.gather(*[_refresh_single(d) for d in devices], return_exceptions=False)
+    results = await asyncio.gather(*[_refresh_single(d) for d in dev_snapshots], return_exceptions=False)
     
     for r in results:
         if not r:
@@ -467,25 +538,49 @@ async def refresh_all_devices(
         dev_obj = session.get(Device, r["id"])
         if not dev_obj:
             continue
+        dev_obj.is_online = r.get("is_online", dev_obj.is_online)
         time_info = r.get("time_info", {})
         storage_info = r.get("storage_info", {})
+        channels_info = r.get("channels_info", {})
 
-        if time_info:
-            dev_obj.time_offset_seconds = time_info.get("offset_seconds", dev_obj.time_offset_seconds)
-            try:
-                dev_obj.device_time = datetime.fromisoformat(time_info.get("device_time", ""))
-            except Exception:
-                pass
+        if not dev_obj.is_online:
+            dev_obj.hdd_status = "Sin Conexión al Grabador"
+            if "IPC" in str(dev_obj.device_type).upper():
+                dev_obj.hdd_capacity_total_gb = 0.0
+                dev_obj.hdd_capacity_free_gb = 0.0
+                dev_obj.storage_media_type = "Sin Almacenamiento Local"
+        else:
+            if time_info and time_info.get("device_time"):
+                if time_info.get("offset_seconds") is not None:
+                    dev_obj.time_offset_seconds = time_info["offset_seconds"]
+                try:
+                    dev_obj.device_time = datetime.fromisoformat(time_info["device_time"])
+                except Exception:
+                    pass
 
-        if storage_info:
-            dev_obj.hdd_status = storage_info.get("hdd_status", dev_obj.hdd_status)
-            dev_obj.hdd_capacity_total_gb = storage_info.get("total_gb", dev_obj.hdd_capacity_total_gb)
-            dev_obj.hdd_capacity_free_gb = storage_info.get("free_gb", dev_obj.hdd_capacity_free_gb)
-            dev_obj.storage_media_type = storage_info.get("media_type", dev_obj.storage_media_type)
+            if storage_info:
+                dev_obj.hdd_status = storage_info.get("hdd_status", dev_obj.hdd_status)
+                dev_obj.hdd_capacity_total_gb = storage_info.get("total_gb", dev_obj.hdd_capacity_total_gb)
+                dev_obj.hdd_capacity_free_gb = storage_info.get("free_gb", dev_obj.hdd_capacity_free_gb)
+                dev_obj.storage_media_type = storage_info.get("media_type", dev_obj.storage_media_type)
+
+            if channels_info:
+                dev_cams = session.exec(select(Camera).where(Camera.device_id == dev_obj.id)).all()
+                cams_by_ch = {c.channel: c for c in dev_cams}
+                for ch_num, ch_info in channels_info.items():
+                    cam_obj = cams_by_ch.get(ch_num)
+                    if not cam_obj:
+                        continue
+                    if ch_info.get("has_video_signal") is not None:
+                        cam_obj.has_video_signal = bool(ch_info["has_video_signal"])
+                    if ch_info.get("is_recording") is not None:
+                        cam_obj.is_recording = bool(ch_info["is_recording"])
+                    session.add(cam_obj)
 
         session.add(dev_obj)
 
     session.commit()
+    set_last_telemetry_sync_ts()
     return {"ok": True, "message": "Dispositivos actualizados en tiempo real"}
 
 
@@ -561,9 +656,9 @@ async def toggle_device_onvif(
         session.commit()
         session.refresh(device)
 
-        # Refrescar configuración de streaming go2rtc
+        # Refrescar configuración de streaming go2rtc sin bloquear el event loop
         from app.core.go2rtc import sync_go2rtc_config
-        sync_go2rtc_config()
+        await asyncio.to_thread(sync_go2rtc_config)
 
         return {
             "ok": True,
@@ -635,78 +730,100 @@ async def sync_all_devices_hardware_info(
     session: Session = Depends(get_session),
     current_user: User = Depends(require_operator_or_admin)
 ) -> Any:
-    """Ejecuta un escaneo y sincronización masiva de datos (Marca, Modelo, Serie, MAC, Firmware) para todos los dispositivos."""
+    """Ejecuta un escaneo y sincronización masiva de datos (Marca, Modelo, Serie, MAC, Firmware) para todos los dispositivos en paralelo."""
+    try:
+        dhcp_updated = await asyncio.to_thread(scanner.reconcile_dhcp_device_ips, session)
+        if dhcp_updated > 0:
+            from app.core.go2rtc import sync_go2rtc_config
+            await asyncio.to_thread(sync_go2rtc_config)
+    except Exception:
+        pass
+
     devices = session.exec(select(Device)).all()
     if not devices:
         return {"ok": True, "message": "No hay dispositivos registrados", "updated_count": 0, "results": []}
 
-    # Escaneo de red para acelerar la detección de todos los dispositivos en paralelo
+    # Escaneo de red en hilo separado para no bloquear el bucle de eventos de FastAPI
     network_map = {}
     try:
-        scanned = scanner.scan_network(timeout=1.5)
+        scanned = await asyncio.to_thread(scanner.scan_network, 1.5)
         for s in scanned:
             network_map[s["host"]] = s
     except Exception as e:
         print(f"Error in scan_network batch: {e}")
 
+    sem = asyncio.Semaphore(8)
+    device_snapshots = [Device(**d.model_dump()) for d in devices]
+
+    async def _probe_hw(dev_copy: Device):
+        async with sem:
+            try:
+                driver = HikvisionDriver(dev_copy)
+                hw = await asyncio.wait_for(driver.get_hardware_details(), timeout=5.0)
+                return dev_copy.id, hw, None
+            except Exception as ex:
+                return dev_copy.id, None, str(ex)
+
+    probed_list = await asyncio.gather(*[_probe_hw(d) for d in device_snapshots], return_exceptions=False)
+    probed_by_id = {dev_id: (hw, err) for dev_id, hw, err in probed_list}
+
     results = []
     updated_count = 0
 
     for dev in devices:
-        try:
-            driver = HikvisionDriver(dev)
-            hw = await driver.get_hardware_details()
-            
-            # Enriquecer con mapa de red si faltaba algo
-            if dev.host in network_map:
-                net_info = network_map[dev.host]
-                if not hw.get("model") and net_info.get("model"):
-                    hw["model"] = net_info["model"]
-                if not hw.get("serial_number") and net_info.get("serial"):
-                    hw["serial_number"] = net_info["serial"]
-                if (not hw.get("brand") or hw.get("brand") == Brand.GENERIC) and net_info.get("brand"):
-                    hw["brand"] = net_info["brand"]
-
-            changed = False
-            if hw.get("model") and dev.model != hw["model"]:
-                dev.model = hw["model"]
-                changed = True
-            if hw.get("serial_number") and dev.serial_number != hw["serial_number"]:
-                dev.serial_number = hw["serial_number"]
-                changed = True
-            if hw.get("firmware_version") and dev.firmware_version != hw["firmware_version"]:
-                dev.firmware_version = hw["firmware_version"]
-                changed = True
-            if hw.get("mac_address") and dev.mac_address != hw["mac_address"]:
-                dev.mac_address = hw["mac_address"]
-                changed = True
-            if hw.get("brand") and dev.brand == Brand.GENERIC and hw["brand"] != Brand.GENERIC:
-                dev.brand = hw["brand"]
-                changed = True
-
-            session.add(dev)
-            if changed:
-                updated_count += 1
-
-            results.append({
-                "id": dev.id,
-                "name": dev.name,
-                "host": dev.host,
-                "brand": dev.brand,
-                "model": dev.model,
-                "serial_number": dev.serial_number,
-                "firmware_version": dev.firmware_version,
-                "mac_address": dev.mac_address,
-                "status": "success"
-            })
-        except Exception as ex:
+        hw, err = probed_by_id.get(dev.id, (None, "No procesado"))
+        if err or hw is None:
             results.append({
                 "id": dev.id,
                 "name": dev.name,
                 "host": dev.host,
                 "status": "error",
-                "error": str(ex)
+                "error": err or "Sin respuesta"
             })
+            continue
+
+        # Enriquecer con mapa de red si faltaba algo
+        if dev.host in network_map:
+            net_info = network_map[dev.host]
+            if not hw.get("model") and net_info.get("model"):
+                hw["model"] = net_info["model"]
+            if not hw.get("serial_number") and net_info.get("serial"):
+                hw["serial_number"] = net_info["serial"]
+            if (not hw.get("brand") or hw.get("brand") == Brand.GENERIC) and net_info.get("brand"):
+                hw["brand"] = net_info["brand"]
+
+        changed = False
+        if hw.get("model") and dev.model != hw["model"]:
+            dev.model = hw["model"]
+            changed = True
+        if hw.get("serial_number") and dev.serial_number != hw["serial_number"]:
+            dev.serial_number = hw["serial_number"]
+            changed = True
+        if hw.get("firmware_version") and dev.firmware_version != hw["firmware_version"]:
+            dev.firmware_version = hw["firmware_version"]
+            changed = True
+        if hw.get("mac_address") and dev.mac_address != hw["mac_address"]:
+            dev.mac_address = hw["mac_address"]
+            changed = True
+        if hw.get("brand") and dev.brand == Brand.GENERIC and hw["brand"] != Brand.GENERIC:
+            dev.brand = hw["brand"]
+            changed = True
+
+        session.add(dev)
+        if changed:
+            updated_count += 1
+
+        results.append({
+            "id": dev.id,
+            "name": dev.name,
+            "host": dev.host,
+            "brand": dev.brand,
+            "model": dev.model,
+            "serial_number": dev.serial_number,
+            "firmware_version": dev.firmware_version,
+            "mac_address": dev.mac_address,
+            "status": "success"
+        })
 
     session.commit()
     return {

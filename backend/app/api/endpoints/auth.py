@@ -54,10 +54,11 @@ def get_current_user_profile(
     return current_user
 
 
-@router.post("/register")
+@router.post("/register", response_model=UserRead)
 def register(
     *,
     session: Session = Depends(get_session),
+    current_user: User = Depends(security.require_admin),
     username: str,
     password: str,
     full_name: str

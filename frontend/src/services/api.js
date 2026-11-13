@@ -4,8 +4,12 @@ const getApiUrl = () => {
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
-  // Si se sirve desde el mismo servidor backend (puerto 8500 o producción)
-  if (window.location.port === '8500' || import.meta.env.PROD) {
+  // Si se sirve desde backend (:8500), Vite proxy (:5173) o producción
+  if (
+    window.location.port === '8500' ||
+    window.location.port === '5173' ||
+    import.meta.env.PROD
+  ) {
     return '/api/v1';
   }
   const hostname = window.location.hostname || 'localhost';

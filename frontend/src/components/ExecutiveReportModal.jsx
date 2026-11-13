@@ -30,9 +30,11 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
 import { formatStorageInfo } from '../utils/storageUtils';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 
 const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => {
   const { user } = useAuth();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const [signingRole, setSigningRole] = useState(null);
   const [selectedReportCode, setSelectedReportCode] = useState(initialReportCode);
@@ -56,6 +58,7 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
       return res.data;
     },
     enabled: isOpen,
+    staleTime: 30000,
     refetchOnWindowFocus: false
   });
 
@@ -75,12 +78,13 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
     try {
       const res = await api.get('/reports/executive-summary', { params: { force_new: true } });
       if (res.data && res.data.report_code) {
+        queryClient.setQueryData(['executiveSummary', res.data.report_code], res.data);
         setSelectedReportCode(res.data.report_code);
-        queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
         queryClient.invalidateQueries({ queryKey: ['auditReportsHistory'] });
+        toast.success(`Informe ${res.data.report_code} generado correctamente.`);
       }
     } catch (err) {
-      alert("Error al generar nuevo informe: " + (err.response?.data?.detail || err.message));
+      toast.error("Error al generar nuevo informe: " + (err.response?.data?.detail || err.message));
     } finally {
       setIsGeneratingNew(false);
     }
@@ -97,10 +101,11 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
       queryClient.invalidateQueries({ queryKey: ['auditReportsHistory'] });
+      toast.success('Firma digital registrada en el informe.');
       setSigningRole(null);
     },
     onError: (err) => {
-      alert("Error al registrar la firma digital: " + (err.response?.data?.detail || err.message));
+      toast.error("Error al registrar la firma digital: " + (err.response?.data?.detail || err.message));
       setSigningRole(null);
     }
   });
@@ -113,9 +118,10 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['executiveSummary'] });
       queryClient.invalidateQueries({ queryKey: ['auditReportsHistory'] });
+      toast.info('Firmas del informe reiniciadas.');
     },
     onError: (err) => {
-      alert("Error al reiniciar firmas: " + (err.response?.data?.detail || err.message));
+      toast.error("Error al reiniciar firmas: " + (err.response?.data?.detail || err.message));
     }
   });
 
@@ -326,8 +332,8 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
                   </div>
 
                   {/* Tabla de Datos Generales del Informe */}
-                  <div className="border border-slate-300 rounded overflow-hidden text-xs">
-                    <table className="w-full text-left border-collapse">
+                  <div className="border border-slate-300 rounded overflow-x-auto print:overflow-visible text-xs">
+                    <table className="w-full min-w-[520px] print:min-w-0 text-left border-collapse">
                       <tbody>
                         <tr className="border-b border-slate-200 bg-slate-50">
                           <td className="p-2 font-bold text-slate-700 w-1/4 bg-slate-100 border-r border-slate-200">Sistema / Entorno:</td>
@@ -451,8 +457,8 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
                     </h2>
                   </div>
 
-                  <div className="border border-slate-300 rounded overflow-hidden">
-                    <table className="w-full text-left text-xs border-collapse">
+                  <div className="border border-slate-300 rounded overflow-x-auto print:overflow-visible">
+                    <table className="w-full min-w-[580px] print:min-w-0 text-left text-xs border-collapse">
                       <thead className="bg-slate-100 text-slate-800 font-bold border-b border-slate-300 uppercase text-[9px]">
                         <tr>
                           <th className="p-2 border-r border-slate-200 text-center w-7">N°</th>
@@ -501,15 +507,33 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
                               </td>
 
                               <td className="p-2 border-r border-slate-200 font-mono">
-                                <div className="flex items-center gap-1 font-sans font-semibold">
-                                  <Clock size={12} className={isDrifted ? 'text-rose-600' : 'text-blue-700'} />
-                                  <span className={isDrifted ? 'text-rose-800 font-bold' : 'text-slate-800'}>
-                                    {isDrifted ? `⚠️ Desfase: ${Math.round((dev.time_offset_seconds || 0)/60)} min` : 'Sincronizado OK'}
-                                  </span>
-                                </div>
-                                <div className="text-[8.5px] text-slate-500 font-mono mt-0.5">
-                                  {dev.device_time ? `Hora: ${new Date(dev.device_time).toLocaleTimeString('es-PE')}` : 'Sin datos'}
-                                </div>
+                                {(() => {
+                                  const devDt = dev.device_time ? new Date(dev.device_time) : null;
+                                  const isYearMismatch = devDt && Math.abs(devDt.getFullYear() - new Date().getFullYear()) >= 1;
+                                  const effectiveDrift = isDrifted || isYearMismatch;
+
+                                  return (
+                                    <>
+                                      <div className="flex items-center gap-1 font-sans font-semibold">
+                                        <Clock size={12} className={effectiveDrift ? 'text-rose-600' : 'text-blue-700'} />
+                                        <span className={effectiveDrift ? 'text-rose-800 font-bold' : 'text-slate-800'}>
+                                          {isYearMismatch
+                                            ? `⚠️ Año incorrecto (${devDt.getFullYear()})`
+                                            : isDrifted
+                                            ? `⚠️ Desfase: ${Math.round((dev.time_offset_seconds || 0)/60)} min`
+                                            : 'Sincronizado OK'}
+                                        </span>
+                                      </div>
+                                      <div className="text-[8.5px] text-slate-600 font-mono mt-0.5">
+                                        {devDt ? (
+                                          <span>
+                                            <strong className="text-slate-700">{devDt.toLocaleDateString('es-PE')}</strong> {devDt.toLocaleTimeString('es-PE')}
+                                          </span>
+                                        ) : 'Sin datos'}
+                                      </div>
+                                    </>
+                                  );
+                                })()}
                               </td>
 
                               <td className="p-2 border-r border-slate-200 text-center">
@@ -650,7 +674,7 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
                                     <img 
                                       src={snapshotUrl}
                                       alt={cam.name}
-                                      className="w-full h-full object-cover"
+                                      className="w-full h-full object-contain bg-black"
                                       onError={(e) => {
                                         e.target.onerror = null;
                                         e.target.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="%2394a3b8" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
@@ -698,8 +722,8 @@ const ExecutiveReportModal = ({ isOpen, onClose, initialReportCode = null }) => 
                     </h2>
                   </div>
 
-                  <div className="border border-slate-300 rounded overflow-hidden">
-                    <table className="w-full text-left text-xs border-collapse">
+                  <div className="border border-slate-300 rounded overflow-x-auto print:overflow-visible">
+                    <table className="w-full min-w-[580px] print:min-w-0 text-left text-xs border-collapse">
                       <thead className="bg-slate-100 text-slate-800 font-bold border-b border-slate-300 uppercase text-[9px]">
                         <tr>
                           <th className="p-2 border-r border-slate-200 w-36">Fecha y Hora</th>
