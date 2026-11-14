@@ -288,13 +288,22 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 class SPAStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope):
+        norm_path = (path or "").replace("\\", "/").lstrip("/")
+        is_hashed_asset = norm_path.startswith("assets/")
         try:
             response = await super().get_response(path, scope)
-            if response.status_code == 404:
-                return await super().get_response("index.html", scope)
-            return response
+            if response.status_code == 404 and not is_hashed_asset:
+                response = await super().get_response("index.html", scope)
         except Exception:
-            return await super().get_response("index.html", scope)
+            if is_hashed_asset:
+                raise
+            response = await super().get_response("index.html", scope)
+
+        if not is_hashed_asset:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
 
 
 # Servir archivos estáticos del frontend (dist / static) en producción
