@@ -68,7 +68,7 @@ const SidebarContent = ({ onItemClick, collapsed = false, onToggleCollapse }) =>
           {!collapsed && (
             <div className="min-w-0">
               <span className="text-base font-black tracking-tight text-white block truncate">CCTV Master</span>
-              <span className="block text-[10px] text-zinc-500 font-mono truncate">v2.1.0 Enterprise</span>
+              <span className="block text-[10px] text-zinc-500 font-mono truncate">v2.1.1 Enterprise</span>
             </div>
           )}
         </div>

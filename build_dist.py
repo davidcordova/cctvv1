@@ -28,10 +28,23 @@ def get_python_exe():
         return venv_py2
     return sys.executable
 
+def stop_workspace_build_processes():
+    """Detiene únicamente procesos en ejecución dentro del directorio del proyecto (sin afectar instalaciones externas)."""
+    ps_script = (
+        f"$proj = '{PROJECT_DIR}'.ToLowerInvariant(); "
+        "Get-Process cctv_backend,go2rtc,ffmpeg -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Path -and $_.Path.ToLowerInvariant().StartsWith($proj) } | "
+        "Stop-Process -Force -ErrorAction SilentlyContinue"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+        capture_output=True,
+    )
+
+
 def main():
-    # Asegurar que procesos previos estén cerrados para evitar bloqueos de archivo
-    subprocess.run("taskkill /F /IM cctv_backend.exe 2>nul", shell=True)
-    subprocess.run("taskkill /F /IM go2rtc.exe 2>nul", shell=True)
+    # Asegurar que procesos previos del workspace estén cerrados para evitar bloqueos de archivo
+    stop_workspace_build_processes()
     
     py_exe = get_python_exe()
     print(f"Utilizando interprete Python: {py_exe}")
@@ -75,12 +88,13 @@ def main():
         f.write('echo ========================================================\n')
         f.write('echo         SISTEMA DE GESTION CCTV - INICIANDO\n')
         f.write('echo ========================================================\n')
-        f.write('for /f "tokens=5" %%a in (\'netstat -aon ^| findstr ":8500" ^| findstr "LISTENING"\') do taskkill /f /pid %%a 2>nul\n')
-        f.write('for /f "tokens=5" %%a in (\'netstat -aon ^| findstr ":1984" ^| findstr "LISTENING"\') do taskkill /f /pid %%a 2>nul\n')
-        f.write('taskkill /F /IM cctv_backend.exe /T 2>nul\n')
-        f.write('taskkill /F /IM go2rtc.exe /T 2>nul\n')
+        f.write('taskkill /F /IM cctv_backend.exe /T >nul 2>&1\n')
+        f.write('taskkill /F /IM go2rtc.exe /T >nul 2>&1\n')
+        f.write('taskkill /F /IM ffmpeg.exe /T >nul 2>&1\n')
+        f.write('for /f "tokens=5" %%a in (\'netstat -aon ^| findstr ":8500 :1984" ^| findstr "LISTENING"\') do taskkill /f /t /pid %%a >nul 2>&1\n')
         f.write('echo Iniciando servidor backend y streaming WebRTC...\n')
-        f.write('start "" "%~dp0cctv_backend.exe"\n')
+        f.write('start "Sistema CCTV - Servidor" "%~dp0cctv_backend.exe"\n')
+        f.write('exit /b 0\n')
 
     detener_bat = os.path.join(OUTPUT_DIR, "Detener_CCTV.bat")
     with open(detener_bat, "w", encoding="utf-8") as f:
@@ -91,11 +105,12 @@ def main():
         f.write('echo         SISTEMA DE GESTION CCTV - DETENIENDO\n')
         f.write('echo ========================================================\n')
         f.write('echo Deteniendo procesos del Sistema CCTV...\n')
-        f.write('for /f "tokens=5" %%a in (\'netstat -aon ^| findstr ":8500" ^| findstr "LISTENING"\') do taskkill /f /pid %%a 2>nul\n')
-        f.write('for /f "tokens=5" %%a in (\'netstat -aon ^| findstr ":1984" ^| findstr "LISTENING"\') do taskkill /f /pid %%a 2>nul\n')
-        f.write('taskkill /F /IM cctv_backend.exe /T 2>nul\n')
-        f.write('taskkill /F /IM go2rtc.exe /T 2>nul\n')
+        f.write('taskkill /F /IM cctv_backend.exe /T >nul 2>&1\n')
+        f.write('taskkill /F /IM go2rtc.exe /T >nul 2>&1\n')
+        f.write('taskkill /F /IM ffmpeg.exe /T >nul 2>&1\n')
+        f.write('for /f "tokens=5" %%a in (\'netstat -aon ^| findstr ":8500 :1984" ^| findstr "LISTENING"\') do taskkill /f /t /pid %%a >nul 2>&1\n')
         f.write('echo Procesos finalizados con exito.\n')
+        f.write('if /I "%~1"=="--silent" exit /b 0\n')
         f.write('timeout /t 2 >nul\n')
 
     # Lanzador Silencioso (Headless - Sin Navegador)
@@ -108,10 +123,12 @@ def main():
         f.write('echo     SISTEMA CCTV - MODO SERVIDOR DEDICADO\n')
         f.write('echo ========================================================\n')
         f.write('echo Iniciando en segundo plano (sin abrir navegador)...\n')
-        f.write('taskkill /F /IM cctv_backend.exe /T 2>nul\n')
-        f.write('taskkill /F /IM go2rtc.exe /T 2>nul\n')
-        f.write('start "" "%~dp0cctv_backend.exe" --no-browser\n')
+        f.write('taskkill /F /IM cctv_backend.exe /T >nul 2>&1\n')
+        f.write('taskkill /F /IM go2rtc.exe /T >nul 2>&1\n')
+        f.write('taskkill /F /IM ffmpeg.exe /T >nul 2>&1\n')
+        f.write('start "Sistema CCTV - Servidor Dedicado" "%~dp0cctv_backend.exe" --no-browser\n')
         f.write('echo Servidor activo. Los clientes pueden conectarse via web.\n')
+        f.write('if /I "%~1"=="--silent" exit /b 0\n')
         f.write('timeout /t 3 >nul\n')
 
     # Script para registrar arranque automático en Windows al encender la máquina
@@ -139,6 +156,22 @@ def main():
         f.write('pause\n')
 
     # Script para abrir y configurar Firewall de Windows con 1 clic (como Administrador)
+    firewall_rules = [
+        ("Sistema CCTV - Web (8500)", 'dir=in action=allow protocol=TCP localport=8500 profile=any'),
+        ("Sistema CCTV - go2rtc WS (1984)", 'dir=in action=allow protocol=TCP localport=1984 profile=any'),
+        ("Sistema CCTV - go2rtc WebRTC (8555)", 'dir=in action=allow protocol=TCP localport=8555 profile=any'),
+        ("Sistema CCTV - go2rtc WebRTC UDP (8555)", 'dir=in action=allow protocol=UDP localport=8555 profile=any'),
+        ("Sistema CCTV - RTSP Server (8554)", 'dir=in action=allow protocol=TCP localport=8554 profile=any'),
+        ("Sistema CCTV - go2rtc Exe (Inbound)", 'dir=in action=allow program="%~dp0go2rtc.exe" enable=yes profile=any'),
+        ("Sistema CCTV - go2rtc Exe (Outbound)", 'dir=out action=allow program="%~dp0go2rtc.exe" enable=yes profile=any'),
+        ("Sistema CCTV - Backend Exe (Inbound)", 'dir=in action=allow program="%~dp0cctv_backend.exe" enable=yes profile=any'),
+        ("Sistema CCTV - Backend Exe (Outbound)", 'dir=out action=allow program="%~dp0cctv_backend.exe" enable=yes profile=any'),
+        ("Sistema CCTV - FFmpeg Exe (Outbound)", 'dir=out action=allow program="%~dp0ffmpeg.exe" enable=yes profile=any'),
+        ("Sistema CCTV - RTSP Cameras Outbound (554)", 'dir=out action=allow protocol=TCP remoteport=554 profile=any'),
+        ("Sistema CCTV - Dahua Outbound (37777)", 'dir=out action=allow protocol=TCP remoteport=37777 profile=any'),
+        ("Sistema CCTV - Dahua UDP Outbound (37778)", 'dir=out action=allow protocol=UDP remoteport=37778 profile=any'),
+        ("Sistema CCTV - Hikvision SDK Outbound (8000)", 'dir=out action=allow protocol=TCP remoteport=8000 profile=any'),
+    ]
     firewall_bat = os.path.join(OUTPUT_DIR, "Configurar_Firewall_Windows.bat")
     with open(firewall_bat, "w", encoding="utf-8") as f:
         f.write('@echo off\n')
@@ -146,18 +179,12 @@ def main():
         f.write('echo ========================================================\n')
         f.write('echo    CONFIGURANDO FIREWALL DE WINDOWS (ADMINISTRADOR)\n')
         f.write('echo ========================================================\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Web (8500)" dir=in action=allow protocol=TCP localport=8500 profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc WS (1984)" dir=in action=allow protocol=TCP localport=1984 profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc WebRTC (8555)" dir=in action=allow protocol=TCP localport=8555 profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc WebRTC UDP (8555)" dir=in action=allow protocol=UDP localport=8555 profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - RTSP Server (8554)" dir=in action=allow protocol=TCP localport=8554 profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc Exe (Inbound)" dir=in action=allow program="%~dp0go2rtc.exe" enable=yes profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - go2rtc Exe (Outbound)" dir=out action=allow program="%~dp0go2rtc.exe" enable=yes profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Backend Exe (Inbound)" dir=in action=allow program="%~dp0cctv_backend.exe" enable=yes profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - Backend Exe (Outbound)" dir=out action=allow program="%~dp0cctv_backend.exe" enable=yes profile=any\n')
-        f.write('netsh advfirewall firewall add rule name="Sistema CCTV - RTSP Cameras Outbound (554)" dir=out action=allow protocol=TCP remoteport=554 profile=any\n')
+        for rule_name, rule_args in firewall_rules:
+            f.write(f'netsh advfirewall firewall delete rule name="{rule_name}" >nul 2>&1\n')
+            f.write(f'netsh advfirewall firewall add rule name="{rule_name}" {rule_args} >nul 2>&1\n')
         f.write('echo.\n')
         f.write('echo [OK] Reglas de Firewall de Windows configuradas exitosamente!\n')
+        f.write('if /I "%~1"=="--silent" exit /b 0\n')
         f.write('pause\n')
 
     # También crear lanzadores en la raíz del dist

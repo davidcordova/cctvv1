@@ -122,7 +122,7 @@ const Login = () => {
             <ShieldCheck size={14} className="text-emerald-500" />
             Conexión Segura
           </span>
-          <span className="font-mono">v2.1.0 Enterprise</span>
+          <span className="font-mono">v2.1.1 Enterprise</span>
         </div>
       </div>
     </div>

@@ -316,20 +316,69 @@ else:
     def root():
         return {"message": "Welcome to CCTV Management System API"}
 
+def _configure_windows_console() -> bool:
+    """Desactiva QuickEdit Mode para evitar bloqueos por clic y habilita ANSI VT si la consola lo soporta."""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        STD_INPUT_HANDLE = -10
+        STD_OUTPUT_HANDLE = -11
+        ENABLE_QUICK_EDIT_MODE = 0x0040
+        ENABLE_EXTENDED_FLAGS = 0x0080
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+
+        h_in = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        in_mode = ctypes.c_uint32()
+        if h_in and h_in != -1 and kernel32.GetConsoleMode(h_in, ctypes.byref(in_mode)):
+            new_in = (in_mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
+            kernel32.SetConsoleMode(h_in, new_in)
+
+        h_out = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        out_mode = ctypes.c_uint32()
+        if h_out and h_out != -1 and kernel32.GetConsoleMode(h_out, ctypes.byref(out_mode)):
+            if kernel32.SetConsoleMode(h_out, out_mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 if __name__ == "__main__":
     import uvicorn
+    ansi_colors = _configure_windows_console()
+    port = 8500
+    for i, arg in enumerate(sys.argv[1:], start=1):
+        if arg == "--port" and i + 1 < len(sys.argv):
+            try:
+                port = int(sys.argv[i + 1])
+            except ValueError:
+                pass
+        elif arg.startswith("--port="):
+            try:
+                port = int(arg.split("=", 1)[1])
+            except ValueError:
+                pass
+
     # Abrir navegador automáticamente tras iniciar sólo si no está en modo headless/servicio
     no_browser = "--no-browser" in sys.argv or os.environ.get("CCTV_NO_BROWSER") == "1"
     if not no_browser:
         def open_browser():
             import time
             time.sleep(1.5)
-            webbrowser.open("http://localhost:8500")
+            webbrowser.open(f"http://localhost:{port}")
 
         import threading
         threading.Thread(target=open_browser, daemon=True).start()
 
-    print("Iniciando Servidor CCTV en http://0.0.0.0:8500...")
-    uvicorn.run("app.main:app" if not getattr(sys, 'frozen', False) else app, host="0.0.0.0", port=8500, log_level="info")
+    print(f"Iniciando Servidor CCTV en http://0.0.0.0:{port}...")
+    uvicorn.run(
+        "app.main:app" if not getattr(sys, 'frozen', False) else app,
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        use_colors=ansi_colors,
+    )
 
 

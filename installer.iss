@@ -2,7 +2,7 @@
 ; Requiere Inno Setup 6 (https://jrsoftware.org/isinfo.php)
 
 #define MyAppName "Sistema de Gestión CCTV"
-#define MyAppVersion "2.1.0"
+#define MyAppVersion "2.1.1"
 #define MyAppPublisher "Empresa CCTV"
 #define MyAppExeName "cctv_backend.exe"
 #define MyAppLauncher "Iniciar_CCTV.bat"
@@ -16,11 +16,13 @@ DefaultDirName={autopf}\Sistema CCTV
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=auto
 OutputDir=Output
-OutputBaseFilename=CCTV_System_Setup_v2.1.0
+OutputBaseFilename=CCTV_System_Setup_v2.1.1
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
+CloseApplications=no
+RestartApplications=no
 InfoAfterFile=credenciales_acceso.txt
 
 [Languages]
@@ -34,11 +36,17 @@ spanish.FinishedLabel=El Sistema CCTV se ha instalado correctamente en su equipo
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "startupicon"; Description: "Iniciar automáticamente al encender la PC"; GroupDescription: "Opciones de inicio:"; Flags: unchecked
 
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\static"
+
 [Dirs]
-Name: "{app}"; Permissions: users-full
+Name: "{app}"
+Name: "{app}\storage"
 
 [Files]
-Source: "dist\cctv_backend\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Permissions: users-full
+Source: "dist\cctv_backend\*"; DestDir: "{app}"; Excludes: "go2rtc.yaml"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\cctv_backend\go2rtc.yaml"; DestDir: "{app}"; Flags: onlyifdoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"
@@ -47,21 +55,45 @@ Name: "{group}\Instalar Arranque Automatico con Windows"; Filename: "{app}\Insta
 Name: "{group}\Detener CCTV"; Filename: "{app}\Detener_CCTV.bat"; WorkingDir: "{app}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; Tasks: startupicon
+Name: "{commonstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; Tasks: startupicon
 
 [Run]
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Web (8500)"" dir=in action=allow protocol=TCP localport=8500 profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - go2rtc WS (1984)"" dir=in action=allow protocol=TCP localport=1984 profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - go2rtc WebRTC (8555)"" dir=in action=allow protocol=TCP localport=8555 profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - go2rtc WebRTC UDP (8555)"" dir=in action=allow protocol=UDP localport=8555 profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - RTSP Server (8554)"" dir=in action=allow protocol=TCP localport=8554 profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - go2rtc Exe (Inbound)"" dir=in action=allow program=""{app}\go2rtc.exe"" enable=yes profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - go2rtc Exe (Outbound)"" dir=out action=allow program=""{app}\go2rtc.exe"" enable=yes profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Backend Exe (Inbound)"" dir=in action=allow program=""{app}\cctv_backend.exe"" enable=yes profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Backend Exe (Outbound)"" dir=out action=allow program=""{app}\cctv_backend.exe"" enable=yes profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - FFmpeg Exe (Outbound)"" dir=out action=allow program=""{app}\ffmpeg.exe"" enable=yes profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - RTSP Cameras Outbound (554)"" dir=out action=allow protocol=TCP remoteport=554 profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Dahua Outbound (37777)"" dir=out action=allow protocol=TCP remoteport=37777 profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Dahua UDP Outbound (37778)"" dir=out action=allow protocol=UDP remoteport=37778 profile=any"; Flags: runhidden
-Filename: "netsh.exe"; Parameters: "advfirewall firewall add rule name=""Sistema CCTV - Hikvision SDK Outbound (8000)"" dir=out action=allow protocol=TCP remoteport=8000 profile=any"; Flags: runhidden
-Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; Description: "Ejecutar {#MyAppName} ahora"; Flags: shellexec postinstall skipifsilent
+Filename: "{cmd}"; Parameters: "/c icacls ""{app}"" /grant *S-1-5-32-545:(OI)(CI)M /C /Q >nul 2>&1 & if exist ""{app}\sql_app.db"" icacls ""{app}\sql_app.db"" /grant *S-1-5-32-545:M /C /Q >nul 2>&1 & if exist ""{app}\go2rtc.yaml"" icacls ""{app}\go2rtc.yaml"" /grant *S-1-5-32-545:M /C /Q >nul 2>&1 & if exist ""{app}\storage"" icacls ""{app}\storage"" /grant *S-1-5-32-545:(OI)(CI)M /C /Q >nul 2>&1"; StatusMsg: "Configurando permisos de carpeta..."; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/c call ""{app}\Configurar_Firewall_Windows.bat"" --silent"; WorkingDir: "{app}"; StatusMsg: "Configurando reglas de Firewall de Windows..."; Flags: runhidden
+Filename: "{app}\{#MyAppLauncher}"; WorkingDir: "{app}"; Description: "Ejecutar {#MyAppName} ahora"; Flags: nowait shellexec postinstall skipifsilent
+
+[Code]
+procedure StopRunningCCTVProcesses();
+var
+  ResultCode: Integer;
+begin
+  { Detener servicios o tareas programadas previas si existieran }
+  Exec('sc.exe', 'stop CCTV_Master_Service', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('sc.exe', 'stop SistemaCCTV', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('schtasks.exe', '/end /tn "SistemaCCTV_AutoStart"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  { Detener procesos en orden (backend padre primero, luego subprocesos de video) }
+  Exec('taskkill.exe', '/F /IM cctv_backend.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('taskkill.exe', '/F /IM go2rtc.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('taskkill.exe', '/F /IM ffmpeg.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('taskkill.exe', '/F /IM mediamtx.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  { Liberar puertos 8500 y 1984 si quedaron sockets huerfanos }
+  Exec(ExpandConstant('{cmd}'),
+    '/c for /f "tokens=5" %a in (''netstat -aon ^| findstr ":8500 :1984" ^| findstr "LISTENING"'') do taskkill /F /T /PID %a >nul 2>&1',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  Sleep(1200);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopRunningCCTVProcesses();
+  Result := '';
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  StopRunningCCTVProcesses();
+  Result := True;
+end;
